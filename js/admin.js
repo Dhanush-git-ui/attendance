@@ -16,13 +16,25 @@ let rotationSecs = 10;
 
 // ---- Auth Guard ----
 auth.onAuthStateChanged(async (user) => {
-  if (!user) { window.location.href = 'index.html'; return; }
-  const doc = await db.collection('users').doc(user.uid).get();
-  if (!doc.exists || doc.data().role !== 'admin') {
-    window.location.href = 'index.html'; return;
+  const modal = document.getElementById('admin-login-modal');
+  if (!user) {
+    if (modal) modal.classList.add('show');
+    return;
   }
-  currentUser = { uid: user.uid, ...doc.data() };
-  document.getElementById('admin-name-display').textContent = currentUser.name;
+  try {
+    const doc = await db.collection('users').doc(user.uid).get();
+    if (!doc.exists || doc.data().role !== 'admin') {
+      if (modal) modal.classList.add('show');
+      return;
+    }
+    currentUser = { uid: user.uid, ...doc.data() };
+    const nameEl = document.getElementById('admin-name-display');
+    if (nameEl) nameEl.textContent = currentUser.name || 'Admin';
+    if (modal) modal.classList.remove('show');
+  } catch (e) {
+    console.error(e);
+    if (modal) modal.classList.add('show');
+  }
 });
 
 // ---- Start Session ----
