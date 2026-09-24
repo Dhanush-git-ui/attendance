@@ -58,12 +58,13 @@ async function startSession() {
       duration,
       status: 'active',
       currentToken: token,
+      previousToken: '',
       tokenUpdatedAt: firebase.firestore.FieldValue.serverTimestamp(),
       rotationSecs,
       endTime: firebase.firestore.Timestamp.fromDate(sessionEndTime)
     });
 
-    currentSession = { id: sessionDocRef.id, className, subject, duration, rotationSecs };
+    currentSession = { id: sessionDocRef.id, className, subject, duration, rotationSecs, currentToken: token, previousToken: '' };
 
     // Show active session card
     document.getElementById('active-session-card').style.display = 'block';
@@ -128,20 +129,38 @@ function startQRRotation() {
   updateCountdown(countdown);
   updateProgress(1);
 
+  let lastTick = Date.now();
+
   qrRotateInterval = setInterval(async () => {
-    countdown--;
-    updateCountdown(countdown);
-    updateProgress(countdown / rotationSecs);
+    const now = Date.now();
+    const elapsed = Math.max(1, Math.round((now - lastTick) / 1000));
+    lastTick = now;
+
+    countdown -= elapsed;
 
     if (countdown <= 0) {
       countdown = rotationSecs;
       const newToken = generateToken();
-      await sessionDocRef.update({
-        currentToken: newToken,
-        tokenUpdatedAt: firebase.firestore.FieldValue.serverTimestamp()
-      });
+      const prevToken = currentSession.currentToken || '';
+      currentSession.previousToken = prevToken;
+      currentSession.currentToken = newToken;
+
+      // Update screen immediately
       renderQR(newToken);
+
+      try {
+        await sessionDocRef.update({
+          currentToken: newToken,
+          previousToken: prevToken,
+          tokenUpdatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+      } catch (err) {
+        console.error('Failed to update session rotation token:', err);
+      }
     }
+
+    updateCountdown(Math.max(0, countdown));
+    updateProgress(Math.max(0, countdown) / rotationSecs);
   }, 1000);
 }
 

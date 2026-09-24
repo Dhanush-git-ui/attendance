@@ -94,7 +94,7 @@ async function onScanSuccess(rawValue) {
     // 1. Fetch session
     const sessionSnap = await db.collection('sessions').doc(sessionId).get();
     if (!sessionSnap.exists) {
-      showStatus('Session not found.', 'error');
+      showStatus('Session not found or has expired.', 'error');
       processing = false; return;
     }
 
@@ -106,18 +106,37 @@ async function onScanSuccess(rawValue) {
       processing = false; return;
     }
 
-    // 3. Token must match
-    if (session.currentToken !== token) {
-      showStatus('QR expired. Please scan the latest code on screen.', 'error');
+    // 3. Token validation: Matches currentToken OR previousToken (grace window)
+    const isCurrent = session.currentToken === token;
+    const isPrevious = Boolean(session.previousToken && session.previousToken === token);
+
+    if (!isCurrent && !isPrevious) {
+      showStatus('QR code expired. Please scan the current code on screen.', 'error');
       processing = false; return;
     }
 
-    // 4. Token freshness (within rotationSecs + 2s buffer)
-    const tokenAge = Date.now() - session.tokenUpdatedAt.toMillis();
-    const maxAge   = (session.rotationSecs + 2) * 1000;
-    if (tokenAge > maxAge) {
-      showStatus('QR too old. Scan the current code.', 'error');
-      processing = false; return;
+    // 4. Token freshness check
+    // If it's the previous token (rotated during scan), allow 45s grace period
+    if (isPrevious && !isCurrent) {
+      if (session.tokenUpdatedAt && session.tokenUpdatedAt.toMillis) {
+        const timeSinceRot = Math.abs(Date.now() - session.tokenUpdatedAt.toMillis());
+        const graceLimit = ((session.rotationSecs || 10) + 45) * 1000;
+        if (timeSinceRot > graceLimit) {
+          showStatus('QR code expired. Please scan the current code on screen.', 'error');
+          processing = false; return;
+        }
+      }
+    }
+
+    // If it's the current active token on screen, allow generous tolerance (up to 3 min)
+    // to handle mobile device clock skew, network latency, and presentation delays
+    if (isCurrent && session.tokenUpdatedAt && session.tokenUpdatedAt.toMillis) {
+      const tokenAge = Date.now() - session.tokenUpdatedAt.toMillis();
+      const maxAge = Math.max((session.rotationSecs || 10) * 8, 180) * 1000;
+      if (tokenAge > maxAge) {
+        showStatus('QR code is stale. Please ask the instructor to refresh the session.', 'error');
+        processing = false; return;
+      }
     }
 
     // 5. Not already marked
@@ -126,6 +145,8 @@ async function onScanSuccess(rawValue) {
     const existing = await existingRef.get();
     if (existing.exists) {
       showStatus('Attendance already marked for this session.', 'success');
+      showToast('You are already marked present!', 'info');
+      loadHistory();
       processing = false; return;
     }
 
@@ -135,6 +156,7 @@ async function onScanSuccess(rawValue) {
       name: currentUser.name,
       rollNumber: roll,
       studentId: roll,
+      uid: currentUser.uid,
       markedAt: firebase.firestore.FieldValue.serverTimestamp(),
       status: 'present',
       sessionId,
@@ -163,25 +185,32 @@ async function loadHistory() {
   if (!currentUser) return;
 
   try {
-    const snap = await db.collectionGroup('records')
-      .where('studentId', '==', currentUser.studentId || '')
-      .orderBy('markedAt', 'desc')
-      .limit(20)
-      .get();
-
-    // Fallback: query by name if studentId doesn't match
     let records = [];
-    snap.forEach(doc => records.push(doc.data()));
+    const roll = currentUser.rollNumber || currentUser.studentId || '';
+
+    // First attempt: try collectionGroup with try/catch
+    try {
+      const snap = await db.collectionGroup('records')
+        .where('studentId', '==', roll)
+        .orderBy('markedAt', 'desc')
+        .limit(20)
+        .get();
+      snap.forEach(doc => records.push(doc.data()));
+    } catch (groupErr) {
+      console.warn('CollectionGroup notice, falling back to direct lookup:', groupErr.message);
+    }
 
     if (!records.length) {
-      // Try querying attendance collection directly by uid
-      const sessions = await db.collection('sessions').limit(50).get();
+      // Query attendance subcollection by current user UID across recent sessions
+      const sessions = await db.collection('sessions').orderBy('startTime', 'desc').limit(25).get().catch(() => ({ docs: [] }));
       for (const sDoc of sessions.docs) {
-        const record = await db.collection('attendance').doc(sDoc.id)
-          .collection('records').doc(currentUser.uid).get();
-        if (record.exists) {
-          records.push({ ...record.data(), sessionId: sDoc.id });
-        }
+        try {
+          const record = await db.collection('attendance').doc(sDoc.id)
+            .collection('records').doc(currentUser.uid).get();
+          if (record.exists) {
+            records.push({ ...record.data(), sessionId: sDoc.id });
+          }
+        } catch (e) {}
       }
     }
 
