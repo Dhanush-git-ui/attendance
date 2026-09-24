@@ -16,24 +16,17 @@ let rotationSecs = 10;
 
 // ---- Auth Guard ----
 auth.onAuthStateChanged(async (user) => {
-  const modal = document.getElementById('admin-login-modal');
-  if (!user) {
-    if (modal) modal.classList.add('show');
-    return;
-  }
-  try {
-    const doc = await db.collection('users').doc(user.uid).get();
-    if (!doc.exists || doc.data().role !== 'admin') {
-      if (modal) modal.classList.add('show');
-      return;
+  if (user) {
+    try {
+      const doc = await db.collection('users').doc(user.uid).get();
+      if (doc.exists && doc.data().role === 'admin') {
+        currentUser = { uid: user.uid, ...doc.data() };
+        const nameEl = document.getElementById('admin-name-display');
+        if (nameEl) nameEl.textContent = currentUser.name || 'Admin';
+      }
+    } catch (e) {
+      console.error(e);
     }
-    currentUser = { uid: user.uid, ...doc.data() };
-    const nameEl = document.getElementById('admin-name-display');
-    if (nameEl) nameEl.textContent = currentUser.name || 'Admin';
-    if (modal) modal.classList.remove('show');
-  } catch (e) {
-    console.error(e);
-    if (modal) modal.classList.add('show');
   }
 });
 

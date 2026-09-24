@@ -3,10 +3,49 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Admin Panel — AttendX</title>
+  <title>Admin Portal — AttendX</title>
   <link rel="stylesheet" href="css/style.css"/>
   <style>
-    /* ---- Admin extra styles ---- */
+    /* Admin Login View */
+    .admin-login-screen {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+      position: relative;
+      z-index: 1;
+    }
+
+    .admin-login-card {
+      width: 100%;
+      max-width: 420px;
+      background: #ffffff;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 2.5rem;
+      box-shadow: 0 20px 45px -10px rgba(15, 23, 42, 0.08);
+    }
+
+    .admin-badge-icon {
+      width: 50px;
+      height: 50px;
+      background: var(--primary-light);
+      color: var(--primary);
+      border: 1px solid #bfdbfe;
+      border-radius: 14px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 1rem;
+    }
+
+    .admin-badge-icon svg {
+      width: 26px;
+      height: 26px;
+    }
+
+    /* Admin extra dashboard styles */
     .section-title {
       font-size: 1.1rem;
       font-weight: 700;
@@ -27,157 +66,206 @@
 </head>
 <body>
 
-<!-- Animated BG -->
+<!-- Animated Background -->
 <div class="bg-scene">
   <div class="orb orb-1"></div>
   <div class="orb orb-2"></div>
 </div>
 
-<!-- Navbar -->
-<nav class="navbar">
-  <div class="logo">
-    <svg class="icon-svg" viewBox="0 0 24 24">
-      <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
-      <path d="M6 12v5c3 3 9 3 12 0v-5"/>
-    </svg>
-    <span>AttendX Admin</span>
-  </div>
-  <div class="nav-user">
-    <span id="admin-name-display">Admin</span>
-    <span class="badge badge-primary">Admin</span>
-    <button class="btn btn-outline" style="padding:0.5rem 1rem;font-size:0.85rem" onclick="logoutAdmin()">Logout</button>
-  </div>
-</nav>
-
-<!-- Page Container -->
-<div class="page-container">
-
-  <div class="grid-2">
-
-    <!-- LEFT: Create Session -->
-    <div>
-      <div class="card">
-        <div class="section-title">
-          <svg class="icon-svg" viewBox="0 0 24 24">
-            <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
-            <rect x="8" y="2" width="8" height="4" rx="1" ry="1"/>
-          </svg>
-          <span>Create New Session</span>
-        </div>
-
-        <div class="form-group">
-          <label>Class / Course Name</label>
-          <input type="text" id="class-name" placeholder="e.g. Mathematics 101" />
-        </div>
-        <div class="form-group">
-          <label>Subject</label>
-          <input type="text" id="subject" placeholder="e.g. Algebra" />
-        </div>
-        <div class="form-group">
-          <label>Session Duration</label>
-          <select id="duration">
-            <option value="300">5 minutes</option>
-            <option value="600">10 minutes</option>
-            <option value="900">15 minutes</option>
-            <option value="1800">30 minutes</option>
-            <option value="3600">1 hour</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label>QR Rotation Interval</label>
-          <select id="rotation">
-            <option value="10">Every 10 seconds</option>
-            <option value="15">Every 15 seconds</option>
-            <option value="20">Every 20 seconds</option>
-          </select>
-        </div>
-
-        <button class="btn btn-success btn-full mt-2" id="start-btn" onclick="startSession()">
-          <svg class="icon-svg fill-current" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-          <span>Start Session</span>
-        </button>
+<!-- ==============================================
+     VIEW 1: ADMIN LOGIN (Shown BEFORE login)
+     ============================================== -->
+<div id="admin-login-view" class="admin-login-screen" style="display:none">
+  <div class="admin-login-card">
+    <div style="text-align:center;margin-bottom:1.75rem">
+      <div class="admin-badge-icon">
+        <svg class="icon-svg" viewBox="0 0 24 24">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        </svg>
       </div>
-
-      <!-- Active Session Info -->
-      <div class="card mt-3" id="active-session-card" style="display:none">
-        <div class="section-title">
-          <svg class="icon-svg" viewBox="0 0 24 24">
-            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-          </svg>
-          <span>Session Active</span>
-        </div>
-        <div id="active-session-info"></div>
-        <div class="divider"></div>
-        <div style="display:flex; gap:0.75rem">
-          <button class="btn btn-primary" style="flex:1" onclick="showQRFullscreen()">
-            <svg class="icon-svg" viewBox="0 0 24 24">
-              <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
-              <line x1="8" y1="21" x2="16" y2="21"/>
-              <line x1="12" y1="17" x2="12" y2="21"/>
-            </svg>
-            <span>Show QR Fullscreen</span>
-          </button>
-          <button class="btn btn-danger" onclick="endSession()">
-            <svg class="icon-svg fill-current" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2" ry="2"/></svg>
-            <span>End</span>
-          </button>
-        </div>
-      </div>
+      <h2 style="font-size:1.5rem;font-weight:800;color:var(--text);margin-bottom:0.35rem">Admin Sign In</h2>
+      <p style="font-size:0.875rem;color:var(--text-muted)">Restricted portal for faculty & staff</p>
     </div>
 
-    <!-- RIGHT: Live Attendance -->
-    <div>
-      <div class="stats-row">
-        <div class="stat-card">
-          <div class="stat-num" id="stat-present">0</div>
-          <div class="stat-label">Present</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-num" id="stat-expected">—</div>
-          <div class="stat-label">Expected</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-num" id="stat-pct">—</div>
-          <div class="stat-label">Attendance %</div>
-        </div>
+    <div id="admin-login-error" class="error-msg"></div>
+
+    <form onsubmit="event.preventDefault(); submitAdminLogin();">
+      <div class="form-group">
+        <label>Admin Email</label>
+        <input type="email" id="admin-login-email" placeholder="admin@school.com" required autofocus autocomplete="email" />
+      </div>
+      <div class="form-group">
+        <label>Password</label>
+        <input type="password" id="admin-login-password" placeholder="Enter your password" required autocomplete="current-password" />
       </div>
 
-      <div class="card">
-        <div class="section-title" style="justify-content:space-between">
-          <span style="display:flex;align-items:center;gap:0.45rem">
+      <button type="submit" class="btn btn-primary btn-full" id="admin-submit-btn">
+        <span>Sign In as Admin</span>
+        <svg class="icon-svg" viewBox="0 0 24 24">
+          <line x1="5" y1="12" x2="19" y2="12"/>
+          <polyline points="12 5 19 12 12 19"/>
+        </svg>
+      </button>
+    </form>
+
+    <div style="text-align:center;margin-top:1.5rem">
+      <a href="/" style="font-size:0.85rem;color:var(--text-muted);text-decoration:none;display:inline-flex;align-items:center;gap:0.35rem">
+        <svg class="icon-svg" viewBox="0 0 24 24"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        <span>Return to Student Portal</span>
+      </a>
+    </div>
+  </div>
+</div>
+
+<!-- ==============================================
+     VIEW 2: ADMIN DASHBOARD (Shown ONLY after login)
+     ============================================== -->
+<div id="admin-dashboard-view" style="display:none">
+  <!-- Navbar -->
+  <nav class="navbar">
+    <div class="logo">
+      <svg class="icon-svg" viewBox="0 0 24 24">
+        <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
+        <path d="M6 12v5c3 3 9 3 12 0v-5"/>
+      </svg>
+      <span>AttendX Admin</span>
+    </div>
+    <div class="nav-user">
+      <span id="admin-name-display">Admin</span>
+      <span class="badge badge-primary">Admin</span>
+      <button class="btn btn-outline" style="padding:0.5rem 1rem;font-size:0.85rem" onclick="logoutAdmin()">Logout</button>
+    </div>
+  </nav>
+
+  <!-- Page Container -->
+  <div class="page-container">
+    <div class="grid-2">
+
+      <!-- LEFT: Create Session -->
+      <div>
+        <div class="card">
+          <div class="section-title">
             <svg class="icon-svg" viewBox="0 0 24 24">
-              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
-              <circle cx="9" cy="7" r="4"/>
-              <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
-              <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+              <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
+              <rect x="8" y="2" width="8" height="4" rx="1" ry="1"/>
             </svg>
-            <span>Live Attendance</span>
-          </span>
-          <button class="btn btn-outline" style="padding:0.4rem 0.9rem;font-size:0.8rem" onclick="exportCSV()">
-            <svg class="icon-svg" viewBox="0 0 24 24">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="7 10 12 15 17 10"/>
-              <line x1="12" y1="15" x2="12" y2="3"/>
-            </svg>
-            <span>Export CSV</span>
+            <span>Create New Session</span>
+          </div>
+
+          <div class="form-group">
+            <label>Class / Course Name</label>
+            <input type="text" id="class-name" placeholder="e.g. Mathematics 101" />
+          </div>
+          <div class="form-group">
+            <label>Subject</label>
+            <input type="text" id="subject" placeholder="e.g. Algebra" />
+          </div>
+          <div class="form-group">
+            <label>Session Duration</label>
+            <select id="duration">
+              <option value="300">5 minutes</option>
+              <option value="600">10 minutes</option>
+              <option value="900">15 minutes</option>
+              <option value="1800">30 minutes</option>
+              <option value="3600">1 hour</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>QR Rotation Interval</label>
+            <select id="rotation">
+              <option value="10">Every 10 seconds</option>
+              <option value="15">Every 15 seconds</option>
+              <option value="20">Every 20 seconds</option>
+            </select>
+          </div>
+
+          <button class="btn btn-success btn-full mt-2" id="start-btn" onclick="startSession()">
+            <svg class="icon-svg fill-current" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            <span>Start Session</span>
           </button>
         </div>
 
-        <div id="attendance-list">
-          <div class="no-session-msg">
-            <div class="icon" style="color:var(--text-muted);display:flex;justify-content:center;margin-bottom:0.75rem">
-              <svg class="icon-lg" viewBox="0 0 24 24">
-                <line x1="18" y1="20" x2="18" y2="10"/>
-                <line x1="12" y1="20" x2="12" y2="4"/>
-                <line x1="6" y1="20" x2="6" y2="14"/>
+        <!-- Active Session Info -->
+        <div class="card mt-3" id="active-session-card" style="display:none">
+          <div class="section-title">
+            <svg class="icon-svg" viewBox="0 0 24 24">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+            </svg>
+            <span>Session Active</span>
+          </div>
+          <div id="active-session-info"></div>
+          <div class="divider"></div>
+          <div style="display:flex; gap:0.75rem">
+            <button class="btn btn-primary" style="flex:1" onclick="showQRFullscreen()">
+              <svg class="icon-svg" viewBox="0 0 24 24">
+                <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                <line x1="8" y1="21" x2="16" y2="21"/>
+                <line x1="12" y1="17" x2="12" y2="21"/>
               </svg>
-            </div>
-            <p>Start a session to see live attendance here</p>
+              <span>Show QR Fullscreen</span>
+            </button>
+            <button class="btn btn-danger" onclick="endSession()">
+              <svg class="icon-svg fill-current" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2" ry="2"/></svg>
+              <span>End</span>
+            </button>
           </div>
         </div>
       </div>
-    </div>
 
+      <!-- RIGHT: Live Attendance -->
+      <div>
+        <div class="stats-row">
+          <div class="stat-card">
+            <div class="stat-num" id="stat-present">0</div>
+            <div class="stat-label">Present</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-num" id="stat-expected">—</div>
+            <div class="stat-label">Expected</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-num" id="stat-pct">—</div>
+            <div class="stat-label">Attendance %</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="section-title" style="justify-content:space-between">
+            <span style="display:flex;align-items:center;gap:0.45rem">
+              <svg class="icon-svg" viewBox="0 0 24 24">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                <circle cx="9" cy="7" r="4"/>
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+              </svg>
+              <span>Live Attendance</span>
+            </span>
+            <button class="btn btn-outline" style="padding:0.4rem 0.9rem;font-size:0.8rem" onclick="exportCSV()">
+              <svg class="icon-svg" viewBox="0 0 24 24">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              <span>Export CSV</span>
+            </button>
+          </div>
+
+          <div id="attendance-list">
+            <div class="no-session-msg">
+              <div class="icon" style="color:var(--text-muted);display:flex;justify-content:center;margin-bottom:0.75rem">
+                <svg class="icon-lg" viewBox="0 0 24 24">
+                  <line x1="18" y1="20" x2="18" y2="10"/>
+                  <line x1="12" y1="20" x2="12" y2="4"/>
+                  <line x1="6" y1="20" x2="6" y2="14"/>
+                </svg>
+              </div>
+              <p>Start a session to see live attendance here</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
   </div>
 </div>
 
@@ -212,51 +300,6 @@
   </div>
 </div>
 
-<!-- ==============================================
-     ADMIN LOGIN MODAL (shown only if not signed in)
-     ============================================== -->
-<div class="modal-overlay" id="admin-login-modal">
-  <div class="modal" style="max-width:420px">
-    <div style="text-align:center;margin-bottom:1.5rem">
-      <div style="width:48px;height:48px;background:var(--primary-light);color:var(--primary);border-radius:12px;display:inline-flex;align-items:center;justify-content:center;margin-bottom:0.75rem;border:1px solid #bfdbfe">
-        <svg class="icon-svg" style="width:24px;height:24px" viewBox="0 0 24 24">
-          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-        </svg>
-      </div>
-      <h2 style="font-size:1.35rem;font-weight:800;color:var(--text);margin-bottom:0.25rem">Administrator Sign In</h2>
-      <p style="font-size:0.85rem;color:var(--text-muted)">Restricted to faculty & staff</p>
-    </div>
-
-    <div id="admin-login-error" class="error-msg"></div>
-
-    <form onsubmit="event.preventDefault(); submitAdminLogin();">
-      <div class="form-group">
-        <label>Admin Email</label>
-        <input type="email" id="modal-admin-email" placeholder="admin@school.com" required autofocus autocomplete="email" />
-      </div>
-      <div class="form-group">
-        <label>Password</label>
-        <input type="password" id="modal-admin-password" placeholder="Enter your password" required autocomplete="current-password" />
-      </div>
-
-      <button type="submit" class="btn btn-primary btn-full" id="modal-admin-btn">
-        <span>Sign In as Admin</span>
-        <svg class="icon-svg" viewBox="0 0 24 24">
-          <line x1="5" y1="12" x2="19" y2="12"/>
-          <polyline points="12 5 19 12 12 19"/>
-        </svg>
-      </button>
-    </form>
-
-    <div style="text-align:center;margin-top:1.25rem">
-      <a href="/" style="font-size:0.85rem;color:var(--text-muted);text-decoration:none;display:inline-flex;align-items:center;gap:0.35rem">
-        <svg class="icon-svg" viewBox="0 0 24 24"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
-        <span>Return to Student Portal</span>
-      </a>
-    </div>
-  </div>
-</div>
-
 <!-- Toast -->
 <div class="toast-container" id="toast-container"></div>
 
@@ -270,22 +313,74 @@
 <script src="js/admin.js"></script>
 
 <script>
-  // Admin Login from modal
+  // ---- View Controller ----
+  function showLogin() {
+    const loginView = document.getElementById('admin-login-view');
+    const dashView  = document.getElementById('admin-dashboard-view');
+    if (loginView) loginView.style.display = 'flex';
+    if (dashView)  dashView.style.display  = 'none';
+  }
+
+  function showDashboard(adminName) {
+    const loginView = document.getElementById('admin-login-view');
+    const dashView  = document.getElementById('admin-dashboard-view');
+    if (loginView) loginView.style.display = 'none';
+    if (dashView) {
+      dashView.style.display = 'block';
+      window.scrollTo(0, 0);
+    }
+    const nameEl = document.getElementById('admin-name-display');
+    if (nameEl) nameEl.textContent = adminName || 'Admin';
+  }
+
+  // ---- Auth State Watcher ----
+  auth.onAuthStateChanged(async (user) => {
+    if (!user) {
+      showLogin();
+      return;
+    }
+
+    try {
+      const doc = await db.collection('users').doc(user.uid).get();
+      if (doc.exists && doc.data().role === 'admin') {
+        currentUser = { uid: user.uid, ...doc.data() };
+        showDashboard(currentUser.name);
+      } else {
+        await auth.signOut();
+        const errEl = document.getElementById('admin-login-error');
+        if (errEl) {
+          errEl.textContent = 'This account does not have administrator privileges.';
+          errEl.classList.add('show');
+        }
+        showLogin();
+      }
+    } catch (e) {
+      console.error(e);
+      showLogin();
+    }
+  });
+
+  // ---- Admin Login Submit ----
   async function submitAdminLogin() {
-    const email = document.getElementById('modal-admin-email').value.trim();
-    const pass  = document.getElementById('modal-admin-password').value;
-    const btn   = document.getElementById('modal-admin-btn');
-    const errEl = document.getElementById('admin-login-error');
+    const emailInput = document.getElementById('admin-login-email');
+    const passInput  = document.getElementById('admin-login-password');
+    const btn        = document.getElementById('admin-submit-btn');
+    const errEl      = document.getElementById('admin-login-error');
+
+    const email = emailInput ? emailInput.value.trim() : '';
+    const pass  = passInput  ? passInput.value : '';
 
     if (!email || !pass) {
-      errEl.textContent = 'Please enter both email and password.';
-      errEl.classList.add('show');
+      if (errEl) {
+        errEl.textContent = 'Please enter both email and password.';
+        errEl.classList.add('show');
+      }
       return;
     }
 
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span> Signing in...';
-    errEl.classList.remove('show');
+    if (errEl) errEl.classList.remove('show');
 
     try {
       const cred = await auth.signInWithEmailAndPassword(email, pass);
@@ -293,27 +388,31 @@
 
       if (!doc.exists || doc.data().role !== 'admin') {
         await auth.signOut();
-        errEl.textContent = 'This account does not have administrator privileges.';
-        errEl.classList.add('show');
+        if (errEl) {
+          errEl.textContent = 'This account does not have administrator privileges.';
+          errEl.classList.add('show');
+        }
         return;
       }
 
-      document.getElementById('admin-login-modal').classList.remove('show');
       currentUser = { uid: cred.user.uid, ...doc.data() };
-      document.getElementById('admin-name-display').textContent = currentUser.name || 'Admin';
+      showDashboard(currentUser.name);
       showToast('Welcome, ' + (currentUser.name || 'Admin'), 'success');
     } catch (e) {
-      errEl.textContent = e.message || 'Invalid email or password.';
-      errEl.classList.add('show');
+      if (errEl) {
+        errEl.textContent = e.message || 'Invalid email or password.';
+        errEl.classList.add('show');
+      }
     } finally {
       btn.disabled = false;
       btn.innerHTML = '<span>Sign In as Admin</span> <svg class="icon-svg" viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>';
     }
   }
 
+  // ---- Logout ----
   function logoutAdmin() {
     auth.signOut().then(() => {
-      document.getElementById('admin-login-modal').classList.add('show');
+      showLogin();
     });
   }
 </script>
