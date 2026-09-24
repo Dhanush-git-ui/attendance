@@ -246,6 +246,53 @@ body {
   color: var(--text);
 }
 
+.password-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.password-input-wrap input {
+  width: 100%;
+  padding-right: 2.75rem !important;
+}
+
+.password-toggle-btn {
+  position: absolute;
+  right: 0.6rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0.4rem;
+  color: #94a3b8;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  line-height: 1;
+  transition: color 0.15s ease, background-color 0.15s ease;
+  z-index: 2;
+}
+
+.password-toggle-btn:hover {
+  color: var(--text);
+  background-color: #f1f5f9;
+}
+
+.password-toggle-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+.password-toggle-btn .icon-svg {
+  width: 1.15rem;
+  height: 1.15rem;
+  pointer-events: none;
+}
+
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
    NAVBAR
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
