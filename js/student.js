@@ -21,9 +21,10 @@ auth.onAuthStateChanged(async (user) => {
 
 // ---- Populate UI ----
 function populateStudentInfo() {
+  const roll = currentUser.rollNumber || currentUser.studentId || '—';
   document.getElementById('student-name-display').textContent = currentUser.name;
   document.getElementById('student-fullname').textContent     = currentUser.name;
-  document.getElementById('student-id-display').textContent   = 'ID: ' + (currentUser.studentId || '—');
+  document.getElementById('student-id-display').textContent   = 'Roll No: ' + roll;
   document.getElementById('student-avatar').textContent       = currentUser.name.charAt(0).toUpperCase();
 }
 
@@ -129,9 +130,11 @@ async function onScanSuccess(rawValue) {
     }
 
     // ---- MARK ATTENDANCE ----
+    const roll = currentUser.rollNumber || currentUser.studentId || '';
     await existingRef.set({
       name: currentUser.name,
-      studentId: currentUser.studentId || '',
+      rollNumber: roll,
+      studentId: roll,
       markedAt: firebase.firestore.FieldValue.serverTimestamp(),
       status: 'present',
       sessionId,

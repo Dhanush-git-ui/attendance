@@ -190,7 +190,7 @@ function renderAttendanceList() {
       <div class="att-avatar">${r.name.charAt(0).toUpperCase()}</div>
       <div class="att-info">
         <div class="att-name">${r.name}</div>
-        <div class="att-meta">ID: ${r.studentId || '—'} &nbsp;|&nbsp; ${formatTime(r.markedAt)}</div>
+        <div class="att-meta">Roll No: ${r.rollNumber || r.studentId || '—'} &nbsp;|&nbsp; ${formatTime(r.markedAt)}</div>
       </div>
       <span class="badge badge-success">
         <svg class="icon-svg" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
@@ -252,9 +252,9 @@ function updateFullscreenInfo() {
 function exportCSV() {
   if (!attendanceData.length) return showToast('No attendance data to export.', 'error');
 
-  const rows = [['Name', 'Student ID', 'Marked At', 'Status']];
+  const rows = [['Name', 'Roll Number', 'Marked At', 'Status']];
   attendanceData.forEach(r => {
-    rows.push([r.name, r.studentId || '', formatTime(r.markedAt), 'Present']);
+    rows.push([r.name, r.rollNumber || r.studentId || '', formatTime(r.markedAt), 'Present']);
   });
 
   const csv = rows.map(r => r.join(',')).join('\n');
