@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>AttendX — Smart Attendance Platform</title>
+  <meta name="description" content="Smart QR-based attendance platform for classrooms"/>
+  <link rel="stylesheet" href="css/style.css"/>
+  <style>
+    .login-page {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+      position: relative;
+      z-index: 1;
+    }
+
+    .login-wrap {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      max-width: 900px;
+      width: 100%;
+      min-height: 560px;
+      border-radius: 24px;
+      overflow: hidden;
+      background: #ffffff;
+      border: 1px solid var(--border);
+      box-shadow: 0 20px 45px -10px rgba(15, 23, 42, 0.08), 0 10px 20px -5px rgba(15, 23, 42, 0.04);
+    }
+
+    /* Left — Hero Panel */
+    .login-hero {
+      background: linear-gradient(145deg, #f0f7ff 0%, #e2e8f0 100%);
+      padding: 3rem 2.5rem;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      position: relative;
+      overflow: hidden;
+      border-right: 1px solid var(--border);
+    }
+
+    .login-hero::before {
+      content: '';
+      position: absolute;
+      top: -80px; left: -80px;
+      width: 280px; height: 280px;
+      background: radial-gradient(circle, rgba(191, 219, 254, 0.6) 0%, transparent 70%);
+      border-radius: 50%;
+    }
+
+    .login-hero::after {
+      content: '';
+      position: absolute;
+      bottom: -60px; right: -60px;
+      width: 250px; height: 250px;
+      background: radial-gradient(circle, rgba(204, 251, 241, 0.5) 0%, transparent 70%);
+      border-radius: 50%;
+    }
+
+    .hero-logo {
+      position: relative;
+      z-index: 2;
+    }
+
+    .logo-icon {
+      width: 52px; height: 52px;
+      background: var(--primary);
+      color: #ffffff;
+      border-radius: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.5rem;
+      margin-bottom: 1rem;
+      box-shadow: 0 4px 14px rgba(37, 99, 235, 0.25);
+    }
+
+    .hero-logo h1 {
+      font-size: 1.9rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      color: var(--text);
+    }
+
+    .hero-logo p {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      margin-top: 0.3rem;
+    }
+
+    .hero-features {
+      position: relative;
+      z-index: 2;
+    }
+
+    .feature-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.85rem;
+      margin-bottom: 1.25rem;
+    }
+
+    .feature-icon {
+      width: 36px; height: 36px;
+      background: #ffffff;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1rem;
+      flex-shrink: 0;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+    }
+
+    .feature-text strong {
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--text);
+      display: block;
+    }
+
+    .feature-text span {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .hero-footer {
+      position: relative;
+      z-index: 2;
+      font-size: 0.78rem;
+      color: var(--text-muted);
+    }
+
+    /* Right — Login Form */
+    .login-form-side {
+      background: #ffffff;
+      padding: 3rem 2.5rem;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    .form-header {
+      margin-bottom: 2rem;
+    }
+
+    .form-header h2 {
+      font-size: 1.6rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      color: var(--text);
+    }
+
+    .form-header p {
+      color: var(--text-muted);
+      font-size: 0.875rem;
+      margin-top: 0.4rem;
+    }
+
+    /* Role tabs */
+    .role-tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.4rem;
+      margin-bottom: 2rem;
+      background: #f1f5f9;
+      padding: 0.35rem;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+    }
+
+    .role-tab {
+      padding: 0.65rem;
+      border-radius: 8px;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      font-weight: 600;
+      font-size: 0.875rem;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      font-family: 'Inter', sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.4rem;
+    }
+
+    .role-tab.active {
+      background: #ffffff;
+      color: var(--primary);
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+    }
+
+    .form-section { display: none; }
+    .form-section.active { display: block; animation: fadeIn 0.25s ease; }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .error-msg {
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      color: var(--danger);
+      padding: 0.75rem 1rem;
+      border-radius: var(--radius-sm);
+      font-size: 0.85rem;
+      margin-bottom: 1rem;
+      display: none;
+      animation: fadeIn 0.2s ease;
+    }
+
+    .error-msg.show { display: block; }
+
+    .register-link {
+      text-align: center;
+      margin-top: 1.25rem;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    .register-link a {
+      color: var(--primary);
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    .register-link a:hover { text-decoration: underline; }
+
+    /* Modal */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.45);
+      backdrop-filter: blur(6px);
+      z-index: 1000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+
+    .modal-overlay.show { display: flex; }
+
+    .modal {
+      background: #ffffff;
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 2.2rem;
+      width: 100%;
+      max-width: 420px;
+      box-shadow: var(--shadow-lg);
+      animation: modalIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    @keyframes modalIn {
+      from { transform: scale(0.92) translateY(10px); opacity: 0; }
+      to   { transform: scale(1) translateY(0);       opacity: 1; }
+    }
+
+    .modal h2 {
+      font-size: 1.35rem;
+      font-weight: 800;
+      margin-bottom: 1.5rem;
+      letter-spacing: -0.02em;
+      color: var(--text);
+    }
+
+    @media (max-width: 700px) {
+      .login-wrap { grid-template-columns: 1fr; }
+      .login-hero  { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Animated Background -->
+<div class="bg-scene">
+  <div class="orb orb-1"></div>
+  <div class="orb orb-2"></div>
+  <div class="orb orb-3"></div>
+</div>
+
+<div class="login-page">
+  <div class="login-wrap">
+
+    <!-- Left Hero -->
+    <div class="login-hero">
+      <div class="hero-logo">
+        <div class="logo-icon">
+          <svg class="icon-svg" viewBox="0 0 24 24">
+            <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
+            <path d="M6 12v5c3 3 9 3 12 0v-5"/>
+          </svg>
+        </div>
+        <h1>AttendX</h1>
+        <p>Smart QR-based Attendance Platform</p>
+      </div>
+
+      <div class="hero-features">
+        <div class="feature-item">
+          <div class="feature-icon">
+            <svg class="icon-svg" viewBox="0 0 24 24">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+            </svg>
+          </div>
+          <div class="feature-text">
+            <strong>Rotating QR Codes</strong>
+            <span>New QR every 10 seconds — fraud proof</span>
+          </div>
+        </div>
+        <div class="feature-item">
+          <div class="feature-icon">
+            <svg class="icon-svg" viewBox="0 0 24 24">
+              <line x1="18" y1="20" x2="18" y2="10"/>
+              <line x1="12" y1="20" x2="12" y2="4"/>
+              <line x1="6" y1="20" x2="6" y2="14"/>
+            </svg>
+          </div>
+          <div class="feature-text">
+            <strong>Live Dashboard</strong>
+            <span>See attendance update in real-time</span>
+          </div>
+        </div>
+        <div class="feature-item">
+          <div class="feature-icon">
+            <svg class="icon-svg" viewBox="0 0 24 24">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            </svg>
+          </div>
+          <div class="feature-text">
+            <strong>5-Layer Security</strong>
+            <span>Token, session, time & duplicate checks</span>
+          </div>
+        </div>
+        <div class="feature-item">
+          <div class="feature-icon">
+            <svg class="icon-svg" viewBox="0 0 24 24">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+          </div>
+          <div class="feature-text">
+            <strong>Export Reports</strong>
+            <span>Download CSV with one click</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="hero-footer">© 2026 AttendX · Built for modern classrooms</div>
+    </div>
+
+    <!-- Right Form -->
+    <div class="login-form-side">
+      <div class="form-header">
+        <h2>Welcome back</h2>
+        <p>Sign in to your account to continue</p>
+      </div>
+
+      <div class="role-tabs">
+        <button class="role-tab active" id="tab-admin" onclick="switchRole('admin')">
+          <svg class="icon-svg" viewBox="0 0 24 24">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          </svg>
+          Admin
+        </button>
+        <button class="role-tab" id="tab-student" onclick="switchRole('student')">
+          <svg class="icon-svg" viewBox="0 0 24 24">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+            <circle cx="12" cy="7" r="4"/>
+          </svg>
+          Student
+        </button>
+      </div>
+
+      <div id="error-msg" class="error-msg"></div>
+
+      <!-- Admin Login -->
+      <div class="form-section active" id="section-admin">
+        <div class="form-group">
+          <label>Email Address</label>
+          <input type="email" id="admin-email" placeholder="admin@school.com" />
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input type="password" id="admin-password" placeholder="Enter your password" />
+        </div>
+        <button class="btn btn-primary btn-full" id="admin-login-btn" onclick="loginAdmin()">
+          <span>Sign In as Admin</span>
+          <svg class="icon-svg" viewBox="0 0 24 24">
+            <line x1="5" y1="12" x2="19" y2="12"/>
+            <polyline points="12 5 19 12 12 19"/>
+          </svg>
+        </button>
+        <div class="register-link">
+          New admin? <a href="#" onclick="openRegister('admin')">Create account</a>
+        </div>
+      </div>
+
+      <!-- Student Login -->
+      <div class="form-section" id="section-student">
+        <div class="form-group">
+          <label>Email Address</label>
+          <input type="email" id="student-email" placeholder="student@school.com" />
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input type="password" id="student-password" placeholder="Enter your password" />
+        </div>
+        <button class="btn btn-primary btn-full" id="student-login-btn" onclick="loginStudent()">
+          <span>Sign In as Student</span>
+          <svg class="icon-svg" viewBox="0 0 24 24">
+            <line x1="5" y1="12" x2="19" y2="12"/>
+            <polyline points="12 5 19 12 12 19"/>
+          </svg>
+        </button>
+        <div class="register-link">
+          New student? <a href="#" onclick="openRegister('student')">Create account</a>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Register Modal -->
+<div class="modal-overlay" id="register-modal">
+  <div class="modal">
+    <h2 id="register-title">Create Account</h2>
+    <div id="register-error" class="error-msg"></div>
+
+    <div class="form-group">
+      <label>Full Name</label>
+      <input type="text" id="reg-name" placeholder="Your full name" />
+    </div>
+    <div class="form-group" id="reg-studentid-group" style="display:none">
+      <label>Student ID</label>
+      <input type="text" id="reg-studentid" placeholder="e.g. S001" />
+    </div>
+    <div class="form-group">
+      <label>Email Address</label>
+      <input type="email" id="reg-email" placeholder="your@email.com" />
+    </div>
+    <div class="form-group">
+      <label>Password</label>
+      <input type="password" id="reg-password" placeholder="Min 6 characters" />
+    </div>
+
+    <div style="display:flex; gap:0.75rem; margin-top:0.5rem">
+      <button class="btn btn-outline" onclick="closeRegister()" style="flex:1">Cancel</button>
+      <button class="btn btn-primary" id="reg-btn" onclick="registerUser()" style="flex:2">Create Account</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-container" id="toast-container"></div>
+
+<script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+<script src="js/firebase-config.js"></script>
+<script src="js/auth.js"></script>
+</body>
+</html>
