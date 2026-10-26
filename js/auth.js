@@ -42,7 +42,26 @@ auth.onAuthStateChanged(async (user) => {
   }
 });
 
-// ---- Student Login (with Roll Number) ----
+// ---- Helper: Merge any locally registered students into ATTENDX_ROSTER ----
+function getMergedRosterStudents() {
+  const list = [];
+  if (typeof window !== 'undefined' && window.ATTENDX_ROSTER && Array.isArray(window.ATTENDX_ROSTER.students)) {
+    list.push(...window.ATTENDX_ROSTER.students);
+  }
+  try {
+    const custom = JSON.parse(localStorage.getItem('attendx_registered_students') || '[]');
+    if (Array.isArray(custom)) {
+      custom.forEach(c => {
+        if (c && c.email && !list.some(s => s.email && s.email.toLowerCase() === c.email.toLowerCase())) {
+          list.push(c);
+        }
+      });
+    }
+  } catch (_) {}
+  return list;
+}
+
+// ---- Student Login (supports Full Name, Phone Number, or Email) ----
 async function loginStudent() {
   const inputEl = document.getElementById('student-identifier') || document.getElementById('student-roll');
   const passInput = document.getElementById('student-password');
@@ -53,7 +72,7 @@ async function loginStudent() {
   const password = passInput.value;
 
   if (!identifier || !password) {
-    return showError('Please enter your Full Name or Phone Number and Password.');
+    return showError('Please enter your Phone Number, Full Name, or Email, and your Password.');
   }
 
   setLoading('student-login-btn', true);
@@ -64,55 +83,104 @@ async function loginStudent() {
     if (identifier.includes('@')) {
       authEmail = identifier.toLowerCase();
     } else {
-      // 2. Lookup in local roster (AVN 2029 DATA BASE)
       const cleanDigits = identifier.replace(/[^0-9]/g, '');
       const cleanText = identifier.toLowerCase().replace(/\s+/g, ' ');
+      const rosterList = getMergedRosterStudents();
 
-      if (typeof window !== 'undefined' && window.ATTENDX_ROSTER && Array.isArray(window.ATTENDX_ROSTER.students)) {
-        // Try Phone Number match first (if input contains digits)
-        if (cleanDigits.length >= 7) {
-          const phoneMatch = window.ATTENDX_ROSTER.students.find(s => {
-            const m = String(s.mobile || '').replace(/[^0-9]/g, '');
-            return m && (m === cleanDigits || m.endsWith(cleanDigits) || cleanDigits.endsWith(m));
-          });
-          if (phoneMatch && phoneMatch.email) {
-            authEmail = phoneMatch.email;
-          }
-        }
-
-        // Try Full Name match
-        if (!authEmail) {
-          const nameMatch = window.ATTENDX_ROSTER.students.find(s => {
-            const n = String(s.name || '').toLowerCase().replace(/\s+/g, ' ');
-            return n && (n === cleanText || n.includes(cleanText) || cleanText.includes(n));
-          });
-          if (nameMatch && nameMatch.email) {
-            authEmail = nameMatch.email;
-          }
+      // 2. Local Roster & LocalStorage Phone Match
+      if (cleanDigits.length >= 7) {
+        const phoneMatch = rosterList.find(s => {
+          const m = String(s.mobile || '').replace(/[^0-9]/g, '');
+          return m && (m === cleanDigits || m.endsWith(cleanDigits) || cleanDigits.endsWith(m));
+        });
+        if (phoneMatch && phoneMatch.email) {
+          authEmail = phoneMatch.email;
         }
       }
 
-      // 3. Fallback: Search Firestore users collection by mobile or name
+      // 3. Local Roster & LocalStorage Name Match
+      if (!authEmail && cleanText.length >= 2) {
+        const nameMatch = rosterList.find(s => {
+          const n = String(s.name || '').toLowerCase().replace(/\s+/g, ' ');
+          return n && (n === cleanText || n.includes(cleanText) || cleanText.includes(n));
+        });
+        if (nameMatch && nameMatch.email) {
+          authEmail = nameMatch.email;
+        }
+      }
+
+      // 4. Firestore Cloud Lookup (for newly registered students not in static bundle)
       if (!authEmail) {
         try {
+          // 4a. Mobile lookup in Firestore 'users'
           if (cleanDigits.length >= 7) {
-            const pSnap = await db.collection('users').where('mobile', '==', cleanDigits).limit(1).get();
+            let pSnap = await db.collection('users').where('mobile', '==', cleanDigits).limit(1).get();
+            if (pSnap.empty && cleanDigits.length > 10) {
+              pSnap = await db.collection('users').where('mobile', '==', cleanDigits.slice(-10)).limit(1).get();
+            }
+            if (pSnap.empty && cleanDigits.length === 10) {
+              pSnap = await db.collection('users').where('mobile', '==', '91' + cleanDigits).limit(1).get();
+            }
             if (!pSnap.empty && pSnap.docs[0].data()?.email) {
               authEmail = pSnap.docs[0].data().email;
             }
           }
-          if (!authEmail) {
-            const nSnap = await db.collection('users').where('name', '==', identifier).limit(1).get();
-            if (!nSnap.empty && nSnap.docs[0].data()?.email) {
+
+          // 4b. Name lookup in Firestore 'users'
+          if (!authEmail && cleanText.length >= 2) {
+            let nSnap = await db.collection('users').where('name', '==', identifier).limit(1).get();
+            if (nSnap.empty) {
+              const allStudentsSnap = await db.collection('users').where('role', '==', 'student').limit(50).get();
+              allStudentsSnap.forEach(d => {
+                if (authEmail) return;
+                const dData = d.data();
+                const dName = String(dData.name || '').toLowerCase().replace(/\s+/g, ' ');
+                if (dName && (dName === cleanText || dName.includes(cleanText) || cleanText.includes(dName))) {
+                  authEmail = dData.email;
+                }
+              });
+            } else if (nSnap.docs[0].data()?.email) {
               authEmail = nSnap.docs[0].data().email;
             }
           }
-        } catch (_) {}
+
+          // 4c. Cloud Master Roster document lookup
+          if (!authEmail) {
+            const rosterDoc = await db.collection('settings').doc('student_roster').get();
+            if (rosterDoc.exists) {
+              const cloudStudents = rosterDoc.data().students || [];
+              if (cleanDigits.length >= 7) {
+                const cloudPhoneMatch = cloudStudents.find(s => {
+                  const m = String(s.mobile || '').replace(/[^0-9]/g, '');
+                  return m && (m === cleanDigits || m.endsWith(cleanDigits) || cleanDigits.endsWith(m));
+                });
+                if (cloudPhoneMatch && cloudPhoneMatch.email) {
+                  authEmail = cloudPhoneMatch.email;
+                }
+              }
+              if (!authEmail && cleanText.length >= 2) {
+                const cloudNameMatch = cloudStudents.find(s => {
+                  const n = String(s.name || '').toLowerCase().replace(/\s+/g, ' ');
+                  return n && (n === cleanText || n.includes(cleanText) || cleanText.includes(n));
+                });
+                if (cloudNameMatch && cloudNameMatch.email) {
+                  authEmail = cloudNameMatch.email;
+                }
+              }
+            }
+          }
+        } catch (fsErr) {
+          console.warn('Firestore directory lookup notice:', fsErr);
+        }
       }
 
-      // 4. Fallback: Standard handle mapping
+      // 5. If STILL not found:
       if (!authEmail) {
-        authEmail = `${identifier.toLowerCase().replace(/[^a-z0-9]/g, '')}@attendx.local`;
+        if (/^[a-zA-Z0-9_-]+$/.test(identifier) && cleanDigits.length < 7) {
+          authEmail = `${identifier.toLowerCase()}@attendx.local`;
+        } else {
+          return showError(`Could not find an account matching "${identifier}". Please check your spelling, or sign in using your registered Email address.`);
+        }
       }
     }
 
@@ -120,8 +188,10 @@ async function loginStudent() {
     try {
       cred = await auth.signInWithEmailAndPassword(authEmail, password);
     } catch (authErr) {
-      if (authErr.code === 'auth/user-not-found' || authErr.code === 'auth/invalid-credential' || authErr.code === 'auth/wrong-password') {
-        throw new Error('Invalid credentials. Please verify your Full Name or Phone Number and Password.');
+      if (authErr.code === 'auth/user-not-found') {
+        throw new Error(`No account found for "${authEmail}". If you haven't registered yet, please click "Create account".`);
+      } else if (authErr.code === 'auth/wrong-password' || authErr.code === 'auth/invalid-credential') {
+        throw new Error('Incorrect password. Please verify your password and try again.');
       }
       throw authErr;
     }
@@ -130,7 +200,16 @@ async function loginStudent() {
     try {
       const doc = await db.collection('users').doc(cred.user.uid).get();
       if (doc.exists) {
-        userRole = doc.data().role;
+        userRole = doc.data().role || 'student';
+      } else {
+        const newProfile = {
+          name: cred.user.displayName || identifier,
+          email: cred.user.email,
+          role: 'student',
+          status: 'active',
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        };
+        await db.collection('users').doc(cred.user.uid).set(newProfile, { merge: true });
       }
     } catch (fsErr) {
       console.warn('Firestore doc read restricted, using local profile or role student:', fsErr);
@@ -154,7 +233,7 @@ async function loginStudent() {
 
     window.location.href = 'student.html';
   } catch (e) {
-    showError(getFriendlyError(e.code));
+    showError(e.message || getFriendlyError(e.code));
   } finally {
     setLoading('student-login-btn', false);
   }
@@ -538,6 +617,19 @@ async function registerStudent() {
 
     // Store student profile locally for fast access
     localStorage.setItem(`user_profile_${cred.user.uid}`, JSON.stringify(studentData));
+    try {
+      const regList = JSON.parse(localStorage.getItem('attendx_registered_students') || '[]');
+      regList.push({
+        name: studentData.name,
+        email: personalEmail,
+        mobile: studentMobile,
+        branch: studentData.branch,
+        section: studentData.section,
+        batch: studentData.batch,
+        rollNumber: rollNumber
+      });
+      localStorage.setItem('attendx_registered_students', JSON.stringify(regList));
+    } catch (_) {}
 
     closeStudentRegister();
     showToast('Account created successfully! Welcome to AttendX.', 'success');

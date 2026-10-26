@@ -45,8 +45,8 @@ service cloud.firestore {
     // 1. USERS COLLECTION
     // ============================================================
     match /users/{userId} {
-      // Authenticated users can read profiles for profile lookup
-      allow read: if isAuthenticated();
+      // Allow read for profile lookup and unauthenticated sign-in resolution (name/phone -> email)
+      allow read: if true;
 
       // On creation:
       // - Must write to their own UID
@@ -75,9 +75,9 @@ service cloud.firestore {
     // 2. SETTINGS / MASTER ROSTER
     // ============================================================
     match /settings/student_roster {
-      // Authenticated users can read the roster for client validation; only staff can write/modify.
-      allow read: if isAuthenticated();
-      allow write: if isStaff();
+      // Roster can be read publicly for validation; staff or newly registered users can write/merge
+      allow read: if true;
+      allow write: if isStaff() || isAuthenticated();
     }
 
     // ============================================================
