@@ -1,31 +1,61 @@
 /**
- * AttendX Live Excel Synchronizer
+ * AttendX Live Two-Way Excel Synchronizer
  * 
- * Continuously watches `AVN 2029 DATA BASE.xlsx` for changes.
- * Whenever the Excel file is modified/saved or newly downloaded:
- * 1. Automatically parses all sheets (BATCH - 1, BATCH - 2, BATCH - 3, Form Responses 1)
- * 2. Reconciles students, preserves review cases, and cleans emails/branches/sections
- * 3. Updates `data/roster.json` and `js/roster-data.js`
- * 4. Pushes live updates directly to Firestore `settings/student_roster` on `attendx-ae324`
+ * CONTINUOUS BIDIRECTIONAL SYNC:
+ * 1. [Excel -> Cloud/Web]: Whenever `AVN 2029 DATA BASE.xlsx` is saved or modified locally:
+ *    - Parses all sheets (BATCH - 1, BATCH - 2, BATCH - 3, Form Responses 1)
+ *    - Cleans and reconciles students
+ *    - Updates `data/roster.json` and `js/roster-data.js`
+ *    - Pushes live updates to Firestore `settings/student_roster`
+ * 
+ * 2. [Cloud/Web -> Excel]: Whenever new students register or attendance is recorded on AttendX:
+ *    - Listens to Firestore `settings/student_roster` and `users` (new student registrations)
+ *    - Listens to `db.collectionGroup('records')` (real-time attendance marked by students)
+ *    - Automatically appends new students to their respective Batch sheet in `AVN 2029 DATA BASE.xlsx`
+ *    - Automatically appends attendance logs to the `Attendance Records` sheet in `AVN 2029 DATA BASE.xlsx`
+ *    - Employs cryptographic hash echo-suppression to prevent circular write loops
  */
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const rootDir = path.resolve(__dirname, '..');
 const localExcelPath = path.join(rootDir, 'AVN 2029 DATA BASE.xlsx');
 const downloadsExcelPath = '/Users/akruthika/Downloads/AVN 2029 DATA BASE.xlsx';
-const serviceKeyPath = '/Users/akruthika/Downloads/attendx-ae324-firebase-adminsdk-fbsvc-0a1c841f4a.json';
+
+const serviceKeyPaths = [
+  path.join(rootDir, 'service-account.json'),
+  '/Users/akruthika/Downloads/attendx-ae324-firebase-adminsdk-fbsvc-0a1c841f4a.json'
+];
 
 const XLSX = require('../js/xlsx.full.min.js');
 
+// Global synchronization state
 let adminDb = null;
+let lastSelfWrittenHash = null;
+let isWritingToFile = false;
+const knownStudentEmails = new Map();
+const knownAttendanceKeys = new Set();
+let debounceTimer = null;
+
+function getFileHash(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const fileBuffer = fs.readFileSync(filePath);
+    return crypto.createHash('md5').update(fileBuffer).digest('hex');
+  } catch (_) {
+    return null;
+  }
+}
+
 function getFirestore() {
   if (adminDb) return adminDb;
   try {
     const admin = require('../functions/node_modules/firebase-admin');
-    if (!fs.existsSync(serviceKeyPath)) {
-      console.warn('⚠️  Service account key not found at:', serviceKeyPath);
+    let serviceKeyPath = serviceKeyPaths.find(p => fs.existsSync(p));
+    if (!serviceKeyPath) {
+      console.warn('⚠️ Service account key not found. Checked:', serviceKeyPaths);
       return null;
     }
     const serviceAccount = JSON.parse(fs.readFileSync(serviceKeyPath, 'utf8'));
@@ -38,7 +68,7 @@ function getFirestore() {
     adminDb = admin.firestore();
     return adminDb;
   } catch (err) {
-    console.warn('⚠️  Could not initialize Firebase Admin SDK for auto-cloud sync:', err.message);
+    console.warn('⚠️ Could not initialize Firebase Admin SDK:', err.message);
     return null;
   }
 }
@@ -81,6 +111,19 @@ function parseWorkbook(excelFile) {
   const buf = fs.readFileSync(excelFile);
   const wb = XLSX.read(buf, { type: 'buffer' });
 
+  // Read existing Attendance Records sheet to seed knownAttendanceKeys
+  if (wb.Sheets['Attendance Records']) {
+    const attRows = XLSX.utils.sheet_to_json(wb.Sheets['Attendance Records'], { header: 1 });
+    for (let i = 1; i < attRows.length; i++) {
+      const r = attRows[i];
+      const sessionId = String(r[3] || '').trim();
+      const studentIdOrEmail = String(r[8] || r[9] || r[7] || '').trim();
+      if (sessionId && studentIdOrEmail) {
+        knownAttendanceKeys.add(`${sessionId}_${studentIdOrEmail}`);
+      }
+    }
+  }
+
   const batchRows = [];
   ['BATCH - 1', 'BATCH - 2', 'BATCH - 3'].forEach(tab => {
     if (!wb.Sheets[tab]) return;
@@ -102,6 +145,27 @@ function parseWorkbook(excelFile) {
       });
     }
   });
+
+  // Check custom/self-registered sheet if present
+  if (wb.Sheets['Self-Registered']) {
+    const selfWs = wb.Sheets['Self-Registered'];
+    const selfRows = XLSX.utils.sheet_to_json(selfWs, { header: 1, defval: '' });
+    for (let i = 1; i < selfRows.length; i++) {
+      const r = selfRows[i];
+      if (!r.some(c => String(c).trim())) continue;
+      batchRows.push({
+        sourceSheet: 'Self-Registered',
+        sourceRow: i + 1,
+        batch: String(r[5] || 'BATCH - 1').trim(),
+        name: String(r[0] || '').trim(),
+        branch: cleanBranch(r[1]),
+        section: cleanSection(r[2]),
+        rawEmail: String(r[3] || '').trim(),
+        email: normalizeEmail(r[3]),
+        mobile: String(r[4] || '').replace(/[^0-9]/g, '')
+      });
+    }
+  }
 
   const formRows = [];
   if (wb.Sheets['Form Responses 1']) {
@@ -166,6 +230,7 @@ function parseWorkbook(excelFile) {
           sourceRow: r.sourceRow
         };
         studentByEmail.set(r.email, studentObj);
+        knownStudentEmails.set(r.email, studentObj);
         if (r.mobile) studentByPhone.set(r.mobile, studentObj);
         legitimateStudents.push(studentObj);
       }
@@ -242,6 +307,7 @@ function parseWorkbook(excelFile) {
         sourceRow: f.sourceRow
       };
       studentByEmail.set(f.email, unassignedObj);
+      knownStudentEmails.set(f.email, unassignedObj);
       if (f.mobile) studentByPhone.set(f.mobile, unassignedObj);
       incompleteRecords.push(unassignedObj);
       legitimateStudents.push(unassignedObj);
@@ -281,9 +347,18 @@ function parseWorkbook(excelFile) {
   };
 }
 
-async function performSync(excelFile) {
+// -------------------------------------------------------------
+// DIRECTION 1: Excel File -> JSON Caches & Cloud Firestore
+// -------------------------------------------------------------
+async function performInwardSync(excelFile) {
+  if (isWritingToFile) return;
+  const currentHash = getFileHash(excelFile);
+  if (currentHash && currentHash === lastSelfWrittenHash) {
+    return; // Ignore self-written echo
+  }
+
   const timestamp = new Date().toLocaleTimeString();
-  console.log(`\n[${timestamp}] 🔄 Syncing Excel sheet: ${path.basename(excelFile)}...`);
+  console.log(`\n[${timestamp}] 📥 [Excel -> Web] Change detected in ${path.basename(excelFile)}...`);
 
   try {
     const payload = parseWorkbook(excelFile);
@@ -291,22 +366,20 @@ async function performSync(excelFile) {
     // 1. Write data/roster.json
     const dataDir = path.join(rootDir, 'data');
     if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-    const jsonPath = path.join(dataDir, 'roster.json');
-    fs.writeFileSync(jsonPath, JSON.stringify(payload, null, 2), 'utf8');
+    fs.writeFileSync(path.join(dataDir, 'roster.json'), JSON.stringify(payload, null, 2), 'utf8');
 
     // 2. Write js/roster-data.js
-    const jsPath = path.join(rootDir, 'js', 'roster-data.js');
     const jsContent = `/**
  * AttendX Student Master Roster (Synced from ${path.basename(excelFile)} at ${new Date().toISOString()})
  */
 window.ATTENDX_ROSTER = ${JSON.stringify(payload)};
 `;
-    fs.writeFileSync(jsPath, jsContent, 'utf8');
+    fs.writeFileSync(path.join(rootDir, 'js', 'roster-data.js'), jsContent, 'utf8');
 
     console.log(`  ✓ Updated data/roster.json (${payload.students.length} students)`);
-    console.log(`  ✓ Updated js/roster-data.js (Browser-ready cache)`);
+    console.log(`  ✓ Updated js/roster-data.js (Browser runtime bundle)`);
 
-    // 3. Sync directly with Firestore settings/student_roster
+    // 3. Sync to Cloud Firestore settings/student_roster
     const db = getFirestore();
     if (db) {
       await db.collection('settings').doc('student_roster').set({
@@ -323,38 +396,297 @@ window.ATTENDX_ROSTER = ${JSON.stringify(payload)};
       console.log(`  ✓ Synced live Cloud Firestore (settings/student_roster) on attendx-ae324`);
     }
 
-    console.log(`[${timestamp}] 🟢 SYNC SUCCESSFUL: ${payload.students.length} students active.`);
+    lastSelfWrittenHash = currentHash;
+    console.log(`[${timestamp}] 🟢 [Excel -> Web] INWARD SYNC COMPLETE: ${payload.students.length} students active.`);
   } catch (err) {
-    console.error(`[${timestamp}] ❌ Sync error:`, err.message);
+    console.error(`[${timestamp}] ❌ Inward sync error:`, err.message);
   }
 }
 
-// Watcher logic
+// -------------------------------------------------------------
+// DIRECTION 2: Cloud Firestore -> Excel File Writeback
+// -------------------------------------------------------------
+function saveWorkbookSafely(wb, reason) {
+  isWritingToFile = true;
+  try {
+    const outBuf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    fs.writeFileSync(localExcelPath, outBuf);
+    if (fs.existsSync(downloadsExcelPath)) {
+      try { fs.writeFileSync(downloadsExcelPath, outBuf); } catch (_) {}
+    }
+    lastSelfWrittenHash = crypto.createHash('md5').update(outBuf).digest('hex');
+    const timestamp = new Date().toLocaleTimeString();
+    console.log(`[${timestamp}] 📤 [Web -> Excel] Successfully saved updates to Excel: ${reason}`);
+  } catch (err) {
+    console.error('❌ Error saving Excel workbook:', err.message);
+  } finally {
+    setTimeout(() => {
+      isWritingToFile = false;
+    }, 1500);
+  }
+}
+
+// Write back newly added/registered students into Excel
+function handleNewStudentsFromCloud(cloudStudents) {
+  if (!Array.isArray(cloudStudents) || !cloudStudents.length) return;
+  if (!fs.existsSync(localExcelPath)) return;
+
+  const newToExcel = [];
+  cloudStudents.forEach(s => {
+    const email = normalizeEmail(s.email);
+    if (email && !knownStudentEmails.has(email)) {
+      newToExcel.push(s);
+    }
+  });
+
+  if (!newToExcel.length) return;
+
+  const timestamp = new Date().toLocaleTimeString();
+  console.log(`\n[${timestamp}] 📤 [Web -> Excel] Found ${newToExcel.length} new student(s) to write to Excel...`);
+
+  try {
+    const buf = fs.readFileSync(localExcelPath);
+    const wb = XLSX.read(buf, { type: 'buffer' });
+
+    newToExcel.forEach(s => {
+      const email = normalizeEmail(s.email);
+      let targetSheetName = 'BATCH - 1';
+
+      if (/BATCH\s*-\s*2/i.test(s.batch)) {
+        targetSheetName = 'BATCH - 2';
+      } else if (/BATCH\s*-\s*3/i.test(s.batch)) {
+        targetSheetName = 'BATCH - 3';
+      } else if (wb.Sheets[s.batch]) {
+        targetSheetName = s.batch;
+      } else if (wb.Sheets['BATCH - 1']) {
+        targetSheetName = 'BATCH - 1';
+      } else {
+        // Fallback to Self-Registered sheet
+        targetSheetName = 'Self-Registered';
+      }
+
+      if (!wb.Sheets[targetSheetName]) {
+        const headerRow = [
+          'Full Name',
+          'Branch',
+          'Section \n( If you do not have a section, please select “No Section.)',
+          'Mai.id',
+          'Mobile Number'
+        ];
+        wb.Sheets[targetSheetName] = XLSX.utils.aoa_to_sheet([headerRow]);
+        XLSX.utils.book_append_sheet(wb, wb.Sheets[targetSheetName], targetSheetName);
+      }
+
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[targetSheetName], { header: 1 });
+      rows.push([
+        s.name || 'New Student',
+        cleanBranch(s.branch),
+        cleanSection(s.section),
+        email,
+        String(s.mobile || '').replace(/[^0-9]/g, '')
+      ]);
+
+      wb.Sheets[targetSheetName] = XLSX.utils.aoa_to_sheet(rows);
+      knownStudentEmails.set(email, s);
+      console.log(`  + Appended "${s.name}" (${email}) -> [${targetSheetName}]`);
+    });
+
+    saveWorkbookSafely(wb, `Appended ${newToExcel.length} new student(s) to roster sheets`);
+
+    // Keep local json caches updated
+    performInwardSync(localExcelPath);
+  } catch (err) {
+    console.error('❌ Error writing new students to Excel:', err.message);
+  }
+}
+
+// Write back attendance logs into Excel sheet "Attendance Records"
+let attendanceQueue = [];
+let attendanceBatchTimer = null;
+
+function queueAttendanceRecord(docId, recordData, sessionId) {
+  const recordKey = `${sessionId}_${recordData.uid || docId}`;
+  if (knownAttendanceKeys.has(recordKey)) return;
+
+  knownAttendanceKeys.add(recordKey);
+  attendanceQueue.push({
+    key: recordKey,
+    sessionId: sessionId,
+    docId: docId,
+    ...recordData
+  });
+
+  clearTimeout(attendanceBatchTimer);
+  attendanceBatchTimer = setTimeout(() => {
+    flushAttendanceQueue();
+  }, 1800);
+}
+
+function flushAttendanceQueue() {
+  if (!attendanceQueue.length || !fs.existsSync(localExcelPath)) return;
+  const itemsToWrite = [...attendanceQueue];
+  attendanceQueue = [];
+
+  const timestamp = new Date().toLocaleTimeString();
+  console.log(`\n[${timestamp}] 📤 [Web -> Excel] Writing ${itemsToWrite.length} attendance record(s) to "Attendance Records" sheet...`);
+
+  try {
+    const buf = fs.readFileSync(localExcelPath);
+    const wb = XLSX.read(buf, { type: 'buffer' });
+
+    let attSheet = wb.Sheets['Attendance Records'];
+    if (!attSheet) {
+      const headerRow = [
+        'Timestamp',
+        'Date',
+        'Time',
+        'Session ID',
+        'Class Name',
+        'Subject',
+        'Batch',
+        'Student Name',
+        'Email',
+        'Roll Number',
+        'Branch',
+        'Section',
+        'Status'
+      ];
+      attSheet = XLSX.utils.aoa_to_sheet([headerRow]);
+      XLSX.utils.book_append_sheet(wb, attSheet, 'Attendance Records');
+    }
+
+    const rows = XLSX.utils.sheet_to_json(attSheet, { header: 1 });
+
+    itemsToWrite.forEach(item => {
+      let markDate = new Date();
+      if (item.markedAt && typeof item.markedAt.toDate === 'function') {
+        markDate = item.markedAt.toDate();
+      } else if (item.markedAt && typeof item.markedAt === 'string') {
+        markDate = new Date(item.markedAt);
+      }
+
+      // Lookup student email
+      let email = item.email || '';
+      if (!email && item.uid) {
+        for (const [em, student] of knownStudentEmails.entries()) {
+          if (student.uid === item.uid || student.rollNumber === item.rollNumber) {
+            email = em;
+            break;
+          }
+        }
+      }
+
+      rows.push([
+        markDate.toISOString(),
+        markDate.toLocaleDateString(),
+        markDate.toLocaleTimeString(),
+        item.sessionId || 'N/A',
+        item.className || 'General',
+        item.subject || 'Attendance Session',
+        item.batch || 'BATCH - 1',
+        item.name || 'Student',
+        email,
+        item.rollNumber || item.studentId || '',
+        cleanBranch(item.branch),
+        cleanSection(item.section),
+        item.status || 'present'
+      ]);
+
+      console.log(`  ✓ Logged attendance: ${item.name} (${item.rollNumber || item.batch || 'Enrolled'}) -> Session: ${item.sessionId}`);
+    });
+
+    wb.Sheets['Attendance Records'] = XLSX.utils.aoa_to_sheet(rows);
+    saveWorkbookSafely(wb, `Recorded ${itemsToWrite.length} attendance entry(ies)`);
+  } catch (err) {
+    console.error('❌ Error logging attendance to Excel:', err.message);
+  }
+}
+
+// Setup real-time Cloud Firestore listeners
+function setupFirestoreListeners() {
+  const db = getFirestore();
+  if (!db) {
+    console.warn('⚠️ Skipping real-time Firestore listeners (Firebase Admin uninitialized).');
+    return;
+  }
+
+  console.log('📡 Setting up real-time bidirectional listeners on Cloud Firestore...');
+
+  // 1. Listen for new students added to settings/student_roster
+  db.collection('settings').doc('student_roster').onSnapshot(doc => {
+    if (!doc.exists) return;
+    const data = doc.data();
+    if (Array.isArray(data.students)) {
+      handleNewStudentsFromCloud(data.students);
+    }
+  }, err => {
+    console.warn('⚠️ Roster cloud listener notice:', err.message);
+  });
+
+  // 2. Listen for new students self-registering in users collection
+  db.collection('users').where('role', '==', 'student').onSnapshot(snap => {
+    const registered = [];
+    snap.forEach(d => registered.push({ id: d.id, ...d.data() }));
+    handleNewStudentsFromCloud(registered);
+  }, err => {
+    console.warn('⚠️ Users cloud listener notice:', err.message);
+  });
+
+  // 3. Listen for live attendance markings across all sessions
+  db.collectionGroup('records').onSnapshot(snap => {
+    snap.docChanges().forEach(change => {
+      if (change.type === 'added' || change.type === 'modified') {
+        const data = change.doc.data();
+        let sessionId = data.sessionId;
+        if (!sessionId && change.doc.ref.parent && change.doc.ref.parent.parent) {
+          sessionId = change.doc.ref.parent.parent.id;
+        }
+        queueAttendanceRecord(change.doc.id, data, sessionId || 'session');
+      }
+    });
+  }, err => {
+    console.warn('⚠️ Attendance collectionGroup listener notice:', err.message);
+  });
+
+  console.log('✓ Bidirectional listeners connected to Firestore (attendx-ae324).');
+}
+
+// -------------------------------------------------------------
+// Continuous File Watcher Setup
+// -------------------------------------------------------------
 function startWatcher() {
   console.log('========================================================================');
-  console.log('       ATTENDX CONTINUOUS EXCEL SYNC WATCHER ACTIVE');
+  console.log('       ATTENDX TWO-WAY REAL-TIME EXCEL SYNC DAEMON ACTIVE');
   console.log('========================================================================');
-  console.log(`Watching:`);
-  console.log(`  1. Local project file : ${localExcelPath}`);
+  console.log('Watching paths:');
+  console.log(`  1. Local Project File : ${localExcelPath}`);
   if (fs.existsSync(downloadsExcelPath)) {
-    console.log(`  2. Downloads file    : ${downloadsExcelPath}`);
+    console.log(`  2. Downloads Folder  : ${downloadsExcelPath}`);
   }
-  console.log('\nListening for Excel file modifications or saves in real-time...\n');
+  console.log('\nTwo-way sync channels active:');
+  console.log('  [Excel -> Web] Modifying local Excel sheet automatically syncs Firestore & app.');
+  console.log('  [Web -> Excel] Student registrations automatically append to their Batch sheet.');
+  console.log('  [Web -> Excel] Real-time QR attendance automatically logs to "Attendance Records".');
+  console.log('------------------------------------------------------------------------\n');
 
-  // Initial sync on start
+  // Initial inward sync on boot
   if (fs.existsSync(localExcelPath)) {
-    performSync(localExcelPath);
+    performInwardSync(localExcelPath).then(() => {
+      // Connect Firestore listeners after initial baseline sync
+      setupFirestoreListeners();
+    });
+  } else {
+    setupFirestoreListeners();
   }
 
-  let debounceTimer = null;
   function scheduleSync(filePath) {
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
-      performSync(filePath);
-    }, 1200); // 1.2s debounce to allow Excel file write completion
+      performInwardSync(filePath);
+    }, 1400); // 1.4s debounce
   }
 
-  // Watch local file
+  // Watch local project file
   if (fs.existsSync(localExcelPath)) {
     fs.watch(localExcelPath, (eventType) => {
       if (eventType === 'change' || eventType === 'rename') {
@@ -363,7 +695,7 @@ function startWatcher() {
     });
   }
 
-  // Watch downloads folder for new exports
+  // Watch downloads folder for newly downloaded replacements
   const downloadsDir = '/Users/akruthika/Downloads';
   if (fs.existsSync(downloadsDir)) {
     fs.watch(downloadsDir, (eventType, filename) => {
@@ -375,9 +707,9 @@ function startWatcher() {
   }
 }
 
-// CLI argument support
+// CLI Execution support
 if (process.argv.includes('--once')) {
-  performSync(localExcelPath).then(() => process.exit(0));
+  performInwardSync(localExcelPath).then(() => process.exit(0));
 } else {
   startWatcher();
 }

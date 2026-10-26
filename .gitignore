@@ -24,6 +24,9 @@ Thumbs.db
 backups/
 scripts/final_roster_payload.json
 
-# Environment variables
+# Environment variables and service accounts
 .env
 .env.local
+*-adminsdk-*.json
+service-account*.json
+credentials.json

@@ -1937,6 +1937,100 @@ function downloadCSVBlob(rows, filename) {
   a.click();
 }
 
+// ---- Export Full Multi-Sheet Excel Workbook (.xlsx) ----
+function exportMasterWorkbookXLSX() {
+  if (typeof XLSX === 'undefined') {
+    return showToast('Excel engine loading, please try again.', 'warning');
+  }
+
+  const wb = XLSX.utils.book_new();
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const sessionName = currentSession?.className || 'General';
+
+  // 1. Sheet: Current Session Attendance
+  if (attendanceData.length || currentSession) {
+    let enrolled = currentSession ? getFilteredEnrolled(currentSession.batch, currentSession.branch, currentSession.section) : masterRoster;
+    const presentMap = new Map();
+    attendanceData.forEach(r => {
+      const roll = (r.rollNumber || r.studentId || '').trim().toUpperCase();
+      if (roll) presentMap.set(roll, r);
+    });
+
+    const attRows = [
+      ['Roll Number', 'Name', 'Branch', 'Section', 'Batch', 'Mobile Number', 'Email', 'Attendance Status', 'Marked At', 'Session ID']
+    ];
+
+    enrolled.forEach(s => {
+      const roll = (s.rollNumber || '').trim().toUpperCase();
+      const rec = presentMap.get(roll);
+      const isPresent = Boolean(rec);
+      attRows.push([
+        s.rollNumber || '',
+        s.name || '',
+        s.branch || '',
+        s.section || '',
+        s.batch || '',
+        s.mobile || '',
+        s.email || '',
+        isPresent ? 'Present' : 'Absent',
+        isPresent ? formatTime(rec.markedAt) : '—',
+        currentSession?.id || '—'
+      ]);
+    });
+
+    const attWs = XLSX.utils.aoa_to_sheet(attRows);
+    XLSX.utils.book_append_sheet(wb, attWs, 'Session Attendance');
+  }
+
+  // 2. Multi-Sheet Batch Rosters
+  const batches = ['BATCH - 1', 'BATCH - 2', 'BATCH - 3'];
+  batches.forEach(bName => {
+    const batchStudents = masterRoster.filter(s => (s.batch || '').trim().toUpperCase() === bName);
+    const rows = [
+      ['Full Name', 'Branch', 'Section', 'Email', 'Mobile Number', 'Roll Number', 'Status']
+    ];
+    batchStudents.forEach(s => {
+      rows.push([
+        s.name || '',
+        s.branch || '',
+        s.section || '',
+        s.email || '',
+        s.mobile || '',
+        s.rollNumber || '',
+        s.status || 'verified'
+      ]);
+    });
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    XLSX.utils.book_append_sheet(wb, ws, bName);
+  });
+
+  // 3. Self-registered / Unassigned / Admin Added
+  const otherStudents = masterRoster.filter(s => !batches.includes((s.batch || '').trim().toUpperCase()));
+  if (otherStudents.length) {
+    const rows = [
+      ['Full Name', 'Branch', 'Section', 'Batch', 'Email', 'Mobile Number', 'Roll Number', 'Status', 'Source']
+    ];
+    otherStudents.forEach(s => {
+      rows.push([
+        s.name || '',
+        s.branch || '',
+        s.section || '',
+        s.batch || '',
+        s.email || '',
+        s.mobile || '',
+        s.rollNumber || '',
+        s.status || 'verified',
+        s.sourceSheet || 'Admin Added'
+      ]);
+    });
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    XLSX.utils.book_append_sheet(wb, ws, 'Additional Students');
+  }
+
+  XLSX.writeFile(wb, `AttendX_Master_Roster_${sessionName}_${dateStr}.xlsx`);
+  showToast('Downloaded complete synced Excel workbook (.xlsx)!', 'success');
+}
+
 // ---- End Session ----
 async function endSession() {
   if (!currentSession) return;

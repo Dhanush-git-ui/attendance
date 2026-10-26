@@ -8,7 +8,10 @@
     "test:registration": "node tests/verify_registration_and_review.cjs",
     "test:attendance": "node tests/verify_mark_attendance.cjs",
     "sync:excel": "node scripts/watch_and_sync_excel.cjs --once",
-    "watch:excel": "node scripts/watch_and_sync_excel.cjs"
+    "watch:excel": "node scripts/watch_and_sync_excel.cjs",
+    "sync:daemon:start": "bash scripts/setup_mac_daemon.sh",
+    "sync:daemon:stop": "launchctl unload ~/Library/LaunchAgents/com.attendx.excelsync.plist 2>/dev/null || true",
+    "sync:daemon:status": "launchctl list | grep attendx || echo 'Daemon not running'"
   },
   "dependencies": {
     "firebase": "^12.19.0"
