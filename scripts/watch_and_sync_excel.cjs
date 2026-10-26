@@ -19,6 +19,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const https = require('https');
 
 const rootDir = path.resolve(__dirname, '..');
 const localExcelPath = path.join(rootDir, 'AVN 2029 DATA BASE.xlsx');
@@ -30,6 +31,16 @@ const serviceKeyPaths = [
 ];
 
 const XLSX = require('../js/xlsx.full.min.js');
+
+// Google Spreadsheet Online Sync Configuration
+const GOOGLE_SPREADSHEET_ID = '1HmJXNseC_n-ctooehmO8QTgGbFN38rEjyyhpn8oxxtI';
+const GOOGLE_SHEET_GIDS = [
+  { name: 'BATCH - 1', gid: '1211978703' },
+  { name: 'BATCH - 2', gid: '1590374431' },
+  { name: 'BATCH - 3', gid: '79810499' },
+  { name: 'Form Responses 1', gid: '334830017' }
+];
+let lastGoogleSheetHash = null;
 
 // Global synchronization state
 let adminDb = null;
@@ -652,6 +663,70 @@ function setupFirestoreListeners() {
 }
 
 // -------------------------------------------------------------
+// Google Sheets Online Synchronizer
+// -------------------------------------------------------------
+function fetchHttp(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, res => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        return fetchHttp(res.headers.location).then(resolve).catch(reject);
+      }
+      if (res.statusCode !== 200) {
+        return reject(new Error('HTTP ' + res.statusCode));
+      }
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => resolve(data));
+    }).on('error', reject);
+  });
+}
+
+async function syncFromGoogleSheets() {
+  if (isWritingToFile) return;
+  try {
+    let combinedData = '';
+    const sheetCsvs = {};
+
+    for (const g of GOOGLE_SHEET_GIDS) {
+      const url = `https://docs.google.com/spreadsheets/d/e/2PACX-1vQ0mIp2vQA4_06cXDCiCcE0WQfOSL_xjmdIE5a04prnhe2_lAHJU72E4PMyp6yQKMltyGwIhNazGRWy/pub?gid=${g.gid}&single=true&output=csv`;
+      const csv = await fetchHttp(url);
+      sheetCsvs[g.name] = csv;
+      combinedData += `${g.gid}:${csv.length}:${csv.slice(0, 60)}|`;
+    }
+
+    const currentGHash = crypto.createHash('md5').update(combinedData).digest('hex');
+    if (lastGoogleSheetHash === currentGHash) {
+      return; // No online changes detected
+    }
+
+    const timestamp = new Date().toLocaleTimeString();
+    console.log(`\n[${timestamp}] 🌐 [Google Sheets -> App] Detected online updates in Google Sheet (${GOOGLE_SPREADSHEET_ID})...`);
+
+    // Parse into workbook format
+    const wb = fs.existsSync(localExcelPath) ? XLSX.read(fs.readFileSync(localExcelPath), { type: 'buffer' }) : XLSX.utils.book_new();
+
+    for (const g of GOOGLE_SHEET_GIDS) {
+      const csv = sheetCsvs[g.name];
+      if (csv) {
+        const parsedWb = XLSX.read(csv, { type: 'string' });
+        const ws = parsedWb.Sheets[parsedWb.SheetNames[0]];
+        wb.Sheets[g.name] = ws;
+        if (!wb.SheetNames.includes(g.name)) wb.SheetNames.push(g.name);
+      }
+    }
+
+    saveWorkbookSafely(wb, 'Synced latest online changes from Google Sheets');
+    lastGoogleSheetHash = currentGHash;
+
+    // Run inward sync
+    await performInwardSync(localExcelPath);
+    console.log(`[${timestamp}] 🟢 [Google Sheets -> App] Live Google Sheet sync complete.`);
+  } catch (err) {
+    console.warn('⚠️ Google Sheets background poll notice:', err.message);
+  }
+}
+
+// -------------------------------------------------------------
 // Continuous File Watcher Setup
 // -------------------------------------------------------------
 function startWatcher() {
@@ -663,7 +738,9 @@ function startWatcher() {
   if (fs.existsSync(downloadsExcelPath)) {
     console.log(`  2. Downloads Folder  : ${downloadsExcelPath}`);
   }
+  console.log(`  3. Live Google Sheet : https://docs.google.com/spreadsheets/d/${GOOGLE_SPREADSHEET_ID}/edit`);
   console.log('\nTwo-way sync channels active:');
+  console.log('  [Google Sheets -> App] Online edits & Form responses poll automatically.');
   console.log('  [Excel -> Web] Modifying local Excel sheet automatically syncs Firestore & app.');
   console.log('  [Web -> Excel] Student registrations automatically append to their Batch sheet.');
   console.log('  [Web -> Excel] Real-time QR attendance automatically logs to "Attendance Records".');
@@ -674,9 +751,14 @@ function startWatcher() {
     performInwardSync(localExcelPath).then(() => {
       // Connect Firestore listeners after initial baseline sync
       setupFirestoreListeners();
+      // Start Google Sheets cloud polling
+      syncFromGoogleSheets();
+      setInterval(syncFromGoogleSheets, 60000); // Poll every 60 seconds
     });
   } else {
     setupFirestoreListeners();
+    syncFromGoogleSheets();
+    setInterval(syncFromGoogleSheets, 60000);
   }
 
   function scheduleSync(filePath) {
