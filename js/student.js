@@ -138,18 +138,33 @@ async function startScanner() {
     return;
   }
 
+  if (typeof Html5Qrcode === 'undefined') {
+    showStatus('The QR scanner library did not load. Please check your network and refresh the page.', 'error');
+    return;
+  }
+
+  if (!window.isSecureContext && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+    showStatus('Camera access requires a secure connection (HTTPS). Open the site using its HTTPS address.', 'error');
+    return;
+  }
+
   try {
     html5QrCode = new Html5Qrcode('reader');
-    await html5QrCode.start(
-      { facingMode: 'environment' },
-      { fps: 10, qrbox: { width: 250, height: 250 } },
-      onScanSuccess,
-      onScanError
-    );
+    const qrConfig = { fps: 10, qrbox: { width: 250, height: 250 } };
+
+    try {
+      // Try back/environment camera first (mobile)
+      await html5QrCode.start({ facingMode: 'environment' }, qrConfig, onScanSuccess, onScanError);
+    } catch (envErr) {
+      console.warn('Environment camera unavailable, falling back to default/front camera:', envErr);
+      // Fallback for laptops/desktops with front webcam
+      await html5QrCode.start({ facingMode: 'user' }, qrConfig, onScanSuccess, onScanError);
+    }
+
     scanning = true;
     document.getElementById('scan-btn').innerHTML = '<svg class="icon-svg fill-current" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2" ry="2"/></svg> <span>Stop Camera</span>';
     document.getElementById('scan-btn').className = 'btn btn-danger btn-full';
-    showStatus('Camera active — point at QR code', 'info');
+    showStatus('Camera active — point at classroom QR code', 'info');
   } catch (e) {
     console.error('Camera startup failed:', e);
     scanning = false;
@@ -161,17 +176,26 @@ async function startScanner() {
       html5QrCode = null;
     }
 
-    let message = 'Camera could not start. Check your browser camera permission and try again.';
-    if (typeof Html5Qrcode === 'undefined') message = 'The QR scanner did not load. Refresh the page and try again.';
-    if (!window.isSecureContext) {
-      message = 'Camera access requires a secure HTTPS page. Open the site using its HTTPS address.';
-    } else if (e && (e.name === 'NotAllowedError' || /permission|denied/i.test(e.message || ''))) {
-      message = 'Camera permission was denied. Allow camera access for this site in your browser settings, then try again.';
-    } else if (e && e.name === 'NotFoundError') {
+    let message = 'Camera could not start.';
+    const errName = (e && e.name) || '';
+    const errMsg = (e && e.message) || '';
+
+    if (errName === 'NotAllowedError' || /permission|denied/i.test(errMsg)) {
+      message = 'Camera permission was denied. Please allow camera permissions for this site in your browser settings and try again.';
+    } else if (errName === 'NotFoundError' || errName === 'DevicesNotFoundError') {
       message = 'No camera was found on this device.';
-    } else if (e && e.name === 'NotReadableError') {
-      message = 'The camera is already in use by another app. Close it and try again.';
+    } else if (errName === 'NotReadableError' || errName === 'TrackStartError') {
+      message = 'Camera is currently locked or in use by another app (e.g. Zoom, Teams, or another tab). Close other camera apps and try again.';
+    } else if (errName === 'OverconstrainedError') {
+      message = 'Camera resolution or constraints not supported by your device camera.';
+    } else if (errName === 'SecurityError') {
+      message = 'Camera access blocked by security policy. Ensure you are on HTTPS.';
+    } else if (errMsg) {
+      message = `Camera error: ${errMsg}`;
+    } else {
+      message = 'Camera could not start. Check permissions and close any other apps using the camera.';
     }
+
     showStatus(message, 'error');
   }
 }

@@ -83,9 +83,9 @@ async function loginStudent() {
   try {
     const cred = await auth.signInWithEmailAndPassword(email, password);
     const profile = await db.collection('users').doc(cred.user.uid).get();
-    if (!profile.exists || profile.data().role !== 'student') {
+    if (!profile.exists || profile.data().role !== 'student' || profile.data().status !== 'active') {
       await auth.signOut();
-      return showError('Student registration is incomplete. Contact your administrator.');
+      return showError('Student registration is incomplete or pending review. Please contact your administrator.');
     }
     window.location.href = 'student.html';
   } catch (error) {
@@ -336,6 +336,13 @@ async function registerStudent() {
     window.location.href = 'student.html';
   } catch (error) {
     console.error('Registration failed:', error);
+    if (cred && cred.user) {
+      try {
+        await cred.user.delete();
+      } catch (delErr) {
+        console.warn('Could not roll back unactivated user account:', delErr);
+      }
+    }
     showRegError(getFriendlyRegError(error.code, error));
   } finally {
     setLoading('reg-btn', false);
@@ -431,8 +438,9 @@ async function registerTrainer() {
   }
 
   setLoading('trainer-reg-btn', true);
+  let cred = null;
   try {
-    const cred = await auth.createUserWithEmailAndPassword(email, password);
+    cred = await auth.createUserWithEmailAndPassword(email, password);
     
     if (cred.user && cred.user.updateProfile) {
       try {
@@ -449,11 +457,7 @@ async function registerTrainer() {
       createdAt: firebase.firestore.FieldValue.serverTimestamp()
     };
 
-    try {
-      await db.collection('users').doc(cred.user.uid).set(trainerData);
-    } catch (fsErr) {
-      console.warn('Firestore trainer write restricted by security rules:', fsErr);
-    }
+    await db.collection('users').doc(cred.user.uid).set(trainerData);
 
     // Immediately sign out so pending trainer is not authenticated
     await auth.signOut();
@@ -464,6 +468,13 @@ async function registerTrainer() {
     showError('Trainer registration submitted. Your account is pending administrator approval before you can sign in.');
   } catch (e) {
     console.error('Trainer registration failed:', e);
+    if (cred && cred.user) {
+      try {
+        await cred.user.delete();
+      } catch (delErr) {
+        console.warn('Could not roll back trainer auth user:', delErr);
+      }
+    }
     showTrainerErr(getFriendlyRegError(e.code, e));
   } finally {
     setLoading('trainer-reg-btn', false);
