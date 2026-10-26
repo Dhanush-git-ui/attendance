@@ -67,7 +67,7 @@ function populateStudentInfo() {
 
   const rollText = document.getElementById('student-roll-text');
   const idDisplay = document.getElementById('student-id-display');
-  const mobile = currentUser.mobile || (userProfile && userProfile.mobile) || '';
+  const mobile = currentUser.mobile || '';
   const labelText = mobile ? `Phone: ${mobile}` : (roll ? `Roll No: ${roll}` : (batch ? `Batch: ${batch}` : 'Student'));
   if (rollText) {
     rollText.textContent = labelText;
@@ -89,16 +89,36 @@ function populateStudentInfo() {
     }
   }
 
-  // College info
+  // Section badge
+  const sectionBadge = document.getElementById('student-section-badge');
+  if (sectionBadge) {
+    if (currentUser.section && currentUser.section !== 'No Section') {
+      sectionBadge.textContent = `Sec ${currentUser.section}`;
+      sectionBadge.style.display = 'inline-flex';
+    } else {
+      sectionBadge.style.display = 'none';
+    }
+  }
+
+  // Batch badge
+  const batchBadge = document.getElementById('student-batch-badge');
+  if (batchBadge) {
+    if (currentUser.batch) {
+      batchBadge.textContent = currentUser.batch;
+      batchBadge.style.display = 'inline-flex';
+    } else {
+      batchBadge.style.display = 'none';
+    }
+  }
+
+  // College info (default to AVN from database)
   const collegeWrap = document.getElementById('student-college-wrap');
   const collegeText = document.getElementById('student-college-text');
   if (collegeWrap && collegeText) {
-    if (currentUser.college) {
-      collegeText.textContent = currentUser.college;
-      collegeWrap.style.display = 'inline-flex';
-    } else {
-      collegeWrap.style.display = 'none';
-    }
+    const rawCollege = currentUser.college;
+    const cleanCollege = (rawCollege && rawCollege !== 'HITAM') ? rawCollege : 'AVN';
+    collegeText.textContent = cleanCollege;
+    collegeWrap.style.display = 'inline-flex';
   }
 }
 
@@ -218,10 +238,12 @@ async function onScanSuccess(rawValue) {
       }
 
       // Fetch student profile details
-      let prof = userProfile || {};
+      let prof = currentUser || {};
       if (!prof.name) {
-        const uDoc = await db.collection('users').doc(currentUser.uid).get();
-        if (uDoc.exists) prof = uDoc.data();
+        try {
+          const uDoc = await db.collection('users').doc(currentUser.uid).get();
+          if (uDoc.exists) prof = { ...prof, ...uDoc.data() };
+        } catch (_) {}
       }
 
       const roll = prof.rollNumber || prof.studentId || '';
@@ -231,7 +253,7 @@ async function onScanSuccess(rawValue) {
         studentId: roll,
         name: prof.name || currentUser.displayName || 'Student',
         branch: prof.branch || '',
-        college: prof.college || 'HITAM',
+        college: (prof.college && prof.college !== 'HITAM') ? prof.college : 'AVN',
         section: prof.section || '',
         batch: prof.batch || '',
         sessionId: sessionId,

@@ -556,7 +556,7 @@ async function registerStudent() {
     const studentMobile = academicData?.mobile || mobileEntered || '';
     const studentData = {
       name: academicData?.name || name,
-      college: academicData?.college || 'HITAM',
+      college: academicData?.college || 'AVN',
       branch: academicData?.branch || branch,
       section: academicData?.section || section || 'No Section',
       rollNumber: rollNumber,
@@ -590,7 +590,7 @@ async function registerStudent() {
             section: studentData.section,
             batch: studentData.batch,
             rollNumber: rollNumber,
-            college: 'HITAM',
+            college: 'AVN',
             status: 'verified',
             sourceSheet: 'Self-Registered'
           })
@@ -605,7 +605,7 @@ async function registerStudent() {
             section: studentData.section,
             batch: studentData.batch,
             rollNumber: rollNumber,
-            college: 'HITAM',
+            college: 'AVN',
             status: 'verified',
             sourceSheet: 'Self-Registered'
           });
