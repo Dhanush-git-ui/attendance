@@ -118,12 +118,10 @@ async function loginStudent() {
       return;
     }
 
-    // Require email verification for personal emails (exempting local mock @attendx.local)
+    // Best-effort notice for unverified personal email without blocking access
     const isLocalMock = cred.user.email && cred.user.email.endsWith('@attendx.local');
     if (!isLocalMock && !cred.user.emailVerified) {
-      await auth.signOut();
-      showError(`Please verify your personal email address (${cred.user.email}) before signing in. Check your inbox for the verification link.`);
-      return;
+      console.log('Notice: Email verification link was sent to', cred.user.email);
     }
 
     window.location.href = 'student.html';
@@ -153,7 +151,7 @@ function closeStudentRegister() {
   const modal = document.getElementById('register-modal');
   if (modal) modal.classList.remove('show');
   
-  const fields = ['reg-name', 'reg-email', 'reg-branch', 'reg-section', 'reg-password', 'reg-confirm-password'];
+  const fields = ['reg-name', 'reg-email', 'reg-branch', 'reg-section', 'reg-batch', 'reg-roll', 'reg-password', 'reg-confirm-password'];
   fields.forEach(id => {
     const el = document.getElementById(id);
     if (el) el.value = '';
@@ -263,6 +261,8 @@ async function onStudentEmailRegInput(val) {
   const hintEl = document.getElementById('roster-match-hint');
   if (!hintEl) return;
 
+  clearTimeout(emailLookupDebounce);
+
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!email || !emailRegex.test(email)) {
     hintEl.innerHTML = '';
@@ -271,57 +271,57 @@ async function onStudentEmailRegInput(val) {
     return;
   }
 
-  emailLookupDebounce = setTimeout(async () => {
-    try {
-      if (typeof firebase !== 'undefined' && firebase.functions) {
-        hintEl.className = 'password-match-hint';
-        hintEl.innerHTML = '<span style="color:#64748b">Verifying email with college roster...</span>';
+  emailLookupDebounce = setTimeout(() => {
+    // 1. Instant client-side lookup from converted JSON roster
+    const match = findStudentInRoster(email);
 
-        const verifyFn = firebase.functions().httpsCallable('verifyStudentRegistration');
-        const res = await verifyFn({ email: email });
-        const data = res.data;
+    const nameInput = document.getElementById('reg-name');
+    const branchInput = document.getElementById('reg-branch');
+    const sectionInput = document.getElementById('reg-section');
+    const batchInput = document.getElementById('reg-batch');
+    const rollInput = document.getElementById('reg-roll');
 
-        if (data && data.verified && data.student) {
-          verifiedRosterData = { ...data.student, email };
-          const nameInput = document.getElementById('reg-name');
-          const branchInput = document.getElementById('reg-branch');
-          const sectionInput = document.getElementById('reg-section');
+    if (match) {
+      verifiedRosterData = { ...match, email };
 
-          if (nameInput && (!nameInput.value.trim() || nameInput.dataset.autofilled === 'true')) {
-            nameInput.value = data.student.name || '';
-            nameInput.dataset.autofilled = 'true';
-          }
-          if (branchInput) {
-            branchInput.value = data.student.branch || '';
-            branchInput.dataset.autofilled = 'true';
-          }
-          if (sectionInput) {
-            sectionInput.value = data.student.section || '';
-            sectionInput.dataset.autofilled = 'true';
-          }
-
-          hintEl.className = 'password-match-hint text-success';
-          hintEl.innerHTML = `<svg class="icon-svg" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg><span>Verified roster: <strong>${data.student.name}</strong> (${data.student.branch || 'Branch'}${data.student.section ? ' - Sec ' + data.student.section : ''})</span>`;
-        } else {
-          verifiedRosterData = null;
-          hintEl.className = 'password-match-hint';
-          hintEl.innerHTML = `<span style="color:#64748b">${data?.message || 'Manual registration allowed.'}</span>`;
-        }
+      if (nameInput && (!nameInput.value.trim() || nameInput.dataset.autofilled === 'true')) {
+        nameInput.value = match.name || '';
+        nameInput.dataset.autofilled = 'true';
       }
-    } catch (e) {
-      console.warn('Roster email verification response:', e);
+      if (branchInput) {
+        branchInput.value = match.branch || '';
+        branchInput.dataset.autofilled = 'true';
+      }
+      if (sectionInput) {
+        sectionInput.value = match.section || '';
+        sectionInput.dataset.autofilled = 'true';
+      }
+      if (batchInput && match.batch) {
+        batchInput.value = match.batch;
+      }
+      if (rollInput && match.rollNumber) {
+        rollInput.value = match.rollNumber;
+      }
+
+      hintEl.className = 'password-match-hint text-success';
+      hintEl.innerHTML = `<svg class="icon-svg" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg><span>Verified in College Roster: <strong>${match.name}</strong> (${match.branch || 'Branch'}${match.section ? ' - Sec ' + match.section : ''}${match.batch ? ' | ' + match.batch : ''})</span>`;
+    } else {
+      // Student is NOT present in Excel sheet -> DO NOT BLOCK! Allow manual entry smoothly
       verifiedRosterData = null;
-      hintEl.className = 'password-match-hint text-danger';
-      const errMsg = e.message || '';
-      if (errMsg.includes('already been registered') || errMsg.includes('already-exists')) {
-        hintEl.innerHTML = `<span style="color:#ef4444">This email has already been registered. Please sign in instead.</span>`;
-      } else if (errMsg.includes('not found') || errMsg.includes('not-found')) {
-        hintEl.innerHTML = `<span style="color:#ef4444">Email is not registered in the official college roster.</span>`;
-      } else {
-        hintEl.innerHTML = `<span style="color:#ef4444">${errMsg || 'Verification failed.'}</span>`;
-      }
+      hintEl.className = 'password-match-hint';
+      hintEl.innerHTML = `<span style="color:#0284c7"><svg class="icon-svg" viewBox="0 0 24 24" style="width:14px;height:14px;vertical-align:-2px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg> New Student (Not in pre-enrolled sheet): Enter your details below to register.</span>`;
     }
-  }, 400);
+  }, 250);
+}
+
+// Helper to find student in converted JSON roster
+function findStudentInRoster(email) {
+  if (!email) return null;
+  const clean = String(email).trim().toLowerCase();
+  if (typeof window !== 'undefined' && window.ATTENDX_ROSTER && Array.isArray(window.ATTENDX_ROSTER.students)) {
+    return window.ATTENDX_ROSTER.students.find(s => String(s.email || '').trim().toLowerCase() === clean);
+  }
+  return null;
 }
 
 // Backward-compatible alias for any legacy callers
@@ -334,6 +334,8 @@ async function registerStudent() {
   const personalEmail = emailInput ? emailInput.value.trim().toLowerCase() : '';
   const branch = document.getElementById('reg-branch') ? document.getElementById('reg-branch').value.trim() : '';
   const section = document.getElementById('reg-section') ? document.getElementById('reg-section').value.trim() : '';
+  const batch = document.getElementById('reg-batch') ? document.getElementById('reg-batch').value.trim() : 'BATCH - 1';
+  const roll = document.getElementById('reg-roll') ? document.getElementById('reg-roll').value.trim() : '';
   const password = document.getElementById('reg-password').value;
   const confirmPassword = document.getElementById('reg-confirm-password') ? document.getElementById('reg-confirm-password').value : password;
 
@@ -356,24 +358,7 @@ async function registerStudent() {
 
   setLoading('reg-btn', true);
   try {
-    let academicData = verifiedRosterData;
-    // Verify against trusted backend if not already verified or if email was edited
-    if (typeof firebase !== 'undefined' && firebase.functions) {
-      if (!academicData || academicData.email !== personalEmail) {
-        try {
-          const verifyFn = firebase.functions().httpsCallable('verifyStudentRegistration');
-          const res = await verifyFn({ email: personalEmail });
-          if (res.data && res.data.verified && res.data.student) {
-            academicData = { ...res.data.student, email: personalEmail };
-            verifiedRosterData = academicData;
-          }
-        } catch (verifyErr) {
-          setLoading('reg-btn', false);
-          const errMsg = verifyErr.message || 'Email verification failed against college roster.';
-          return showRegError(errMsg);
-        }
-      }
-    }
+    let academicData = verifiedRosterData || findStudentInRoster(personalEmail);
 
     // 1. Create account in Firebase Authentication using personal email
     const cred = await auth.createUserWithEmailAndPassword(personalEmail, password);
@@ -384,45 +369,81 @@ async function registerStudent() {
       } catch (_) {}
     }
 
-    // 2. Require Email Verification: send verification link to personal email
+    // 2. Best-effort verification email link
     try {
       await cred.user.sendEmailVerification();
     } catch (verifErr) {
       console.warn('Could not send verification email:', verifErr);
     }
 
-    // 3. Build student profile strictly from verified roster (academic details cannot be forged)
-    const rollNumber = academicData?.rollNumber || '';
+    // 3. Build student profile: using roster data if enrolled, or user-entered details if new student!
+    const rollNumber = academicData?.rollNumber || roll || '';
     const studentData = {
       name: academicData?.name || name,
-      college: academicData?.college || 'College',
+      college: academicData?.college || 'HITAM',
       branch: academicData?.branch || branch,
-      section: academicData?.section || section || '',
+      section: academicData?.section || section || 'No Section',
       rollNumber: rollNumber,
       studentId: rollNumber,
       email: personalEmail,
       personalEmail: personalEmail,
       role: 'student',
-      batch: academicData?.batch || '',
-      emailVerified: false,
+      batch: academicData?.batch || batch || 'BATCH - 1',
+      status: 'active',
+      isNewRegistration: !academicData,
       createdAt: firebase.firestore.FieldValue.serverTimestamp()
     };
 
-    // Save profile to Firestore
+    // Save profile to Firestore users collection
     try {
       await db.collection('users').doc(cred.user.uid).set(studentData);
     } catch (fsErr) {
-      console.warn('Firestore user doc write was restricted by security rules:', fsErr);
+      console.warn('Firestore user doc write warning:', fsErr);
     }
 
-    // Store student profile locally for offline/rule resilience
+    // If new student not originally in sheet, add them to student_roster so admin can track them
+    if (!academicData) {
+      try {
+        await db.collection('settings').doc('student_roster').set({
+          students: firebase.firestore.FieldValue.arrayUnion({
+            name: studentData.name,
+            email: personalEmail,
+            branch: studentData.branch,
+            section: studentData.section,
+            batch: studentData.batch,
+            rollNumber: rollNumber,
+            college: 'HITAM',
+            status: 'verified',
+            sourceSheet: 'Self-Registered'
+          })
+        }, { merge: true });
+        
+        if (typeof window !== 'undefined' && window.ATTENDX_ROSTER && Array.isArray(window.ATTENDX_ROSTER.students)) {
+          window.ATTENDX_ROSTER.students.push({
+            name: studentData.name,
+            email: personalEmail,
+            branch: studentData.branch,
+            section: studentData.section,
+            batch: studentData.batch,
+            rollNumber: rollNumber,
+            college: 'HITAM',
+            status: 'verified',
+            sourceSheet: 'Self-Registered'
+          });
+        }
+      } catch (rosterAddErr) {
+        console.warn('Could not auto-add to roster collection:', rosterAddErr);
+      }
+    }
+
+    // Store student profile locally for fast access
     localStorage.setItem(`user_profile_${cred.user.uid}`, JSON.stringify(studentData));
 
-    // 4. Sign out immediately so unverified student cannot access dashboard until email is confirmed
-    await auth.signOut();
-
     closeStudentRegister();
-    showToast(`Account created! A verification link has been sent to ${personalEmail}. Please verify before logging in.`, 'success');
+    showToast('Account created successfully! Welcome to AttendX.', 'success');
+
+    // Auto-redirect to student portal
+    window.location.href = 'student.html';
   } catch (e) {
     console.error('Registration failed:', e);
     showRegError(getFriendlyRegError(e.code, e));

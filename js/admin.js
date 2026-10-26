@@ -555,6 +555,13 @@ function loadMasterRoster() {
     }
   }
 
+  // Fallback to pre-compiled JSON roster if local storage is empty
+  if (!masterRoster.length && typeof window !== 'undefined' && window.ATTENDX_ROSTER && Array.isArray(window.ATTENDX_ROSTER.students)) {
+    masterRoster = sanitizeRoster(window.ATTENDX_ROSTER.students);
+    masterIncompleteReviews = Array.isArray(window.ATTENDX_ROSTER.incompleteRecordsReview) ? window.ATTENDX_ROSTER.incompleteRecordsReview : [];
+    masterConflicts = Array.isArray(window.ATTENDX_ROSTER.alternateEmailConflicts) ? window.ATTENDX_ROSTER.alternateEmailConflicts : [];
+  }
+
   // Also check Firestore if available
   try {
     db.collection('settings').doc('student_roster').get().then(doc => {
@@ -1655,6 +1662,105 @@ function openRosterModal(mode = 'all') {
 function closeRosterModal() {
   const modal = document.getElementById('roster-modal');
   if (modal) modal.classList.remove('show');
+}
+
+// ---- Add Single Student Handlers ----
+function openAddStudentModal() {
+  const modal = document.getElementById('add-student-modal');
+  if (modal) {
+    modal.classList.add('show');
+    const errEl = document.getElementById('add-student-error');
+    if (errEl) { errEl.textContent = ''; errEl.style.display = 'none'; }
+    const nameEl = document.getElementById('as-name');
+    if (nameEl) setTimeout(() => nameEl.focus(), 100);
+  }
+}
+
+function closeAddStudentModal() {
+  const modal = document.getElementById('add-student-modal');
+  if (modal) modal.classList.remove('show');
+  ['as-name', 'as-email', 'as-branch', 'as-section', 'as-roll', 'as-mobile'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  const errEl = document.getElementById('add-student-error');
+  if (errEl) { errEl.textContent = ''; errEl.style.display = 'none'; }
+}
+
+async function submitAddSingleStudent(e) {
+  if (e && e.preventDefault) e.preventDefault();
+  const name = document.getElementById('as-name').value.trim();
+  const email = document.getElementById('as-email').value.trim().toLowerCase();
+  const branch = document.getElementById('as-branch').value.trim().toUpperCase();
+  const section = document.getElementById('as-section').value.trim().toUpperCase();
+  const batch = document.getElementById('as-batch').value;
+  const roll = (document.getElementById('as-roll').value || '').trim().toUpperCase();
+  const mobile = (document.getElementById('as-mobile').value || '').replace(/[^0-9]/g, '');
+
+  const errEl = document.getElementById('add-student-error');
+  const btn = document.getElementById('as-submit-btn');
+
+  if (!name || !email || !branch || !section || !batch) {
+    if (errEl) { errEl.textContent = 'Please fill in Name, Email, Branch, Section, and Batch.'; errEl.style.display = 'block'; }
+    return;
+  }
+
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) {
+    if (errEl) { errEl.textContent = 'Please enter a valid email address.'; errEl.style.display = 'block'; }
+    return;
+  }
+
+  // Check duplicate email
+  const existing = masterRoster.find(s => (s.email || '').trim().toLowerCase() === email);
+  if (existing) {
+    if (errEl) { errEl.textContent = `A student with email "${email}" already exists in ${existing.batch || 'roster'}.`; errEl.style.display = 'block'; }
+    return;
+  }
+
+  if (btn) btn.disabled = true;
+
+  const newStudent = {
+    name,
+    email,
+    branch,
+    section,
+    batch,
+    rollNumber: roll,
+    studentId: roll,
+    mobile,
+    college: 'HITAM',
+    status: 'verified',
+    sourceSheet: 'Admin Added',
+    createdAt: new Date().toISOString()
+  };
+
+  try {
+    // 1. Add to Firestore settings/student_roster
+    await db.collection('settings').doc('student_roster').set({
+      students: firebase.firestore.FieldValue.arrayUnion(newStudent)
+    }, { merge: true });
+
+    // 2. Add to in-memory masterRoster
+    masterRoster.push(newStudent);
+
+    // 3. Add to window.ATTENDX_ROSTER
+    if (typeof window !== 'undefined' && window.ATTENDX_ROSTER && Array.isArray(window.ATTENDX_ROSTER.students)) {
+      window.ATTENDX_ROSTER.students.push(newStudent);
+    }
+
+    // 4. Update UI stats and tables
+    updateRosterSummaryUI();
+    renderRosterPreview(masterRoster);
+
+    closeAddStudentModal();
+    showToast(`Student "${name}" added to roster successfully!`, 'success');
+  } catch (err) {
+    console.error('Error adding student:', err);
+    if (errEl) { errEl.textContent = 'Failed to add student: ' + err.message; errEl.style.display = 'block'; }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 // Drag & drop handlers for dropzone

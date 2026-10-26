@@ -162,12 +162,89 @@ async function onScanSuccess(rawValue) {
   showStatus('Verifying attendance with server...', 'info');
 
   try {
-    const markAttendanceFn = firebase.functions().httpsCallable('markAttendance');
-    const res = await markAttendanceFn({ sessionId, token });
-    const data = res.data || {};
+    let successRecorded = false;
 
-    showStatus(`Attendance marked for "${data.className || 'Class'}" — ${data.subject || 'Session'}`, 'success');
-    showToast('Attendance recorded!', 'success');
+    // 1. If Cloud Functions are available (e.g. Blaze plan), try callable function
+    if (typeof firebase !== 'undefined' && firebase.functions) {
+      try {
+        const markAttendanceFn = firebase.functions().httpsCallable('markAttendance');
+        const res = await markAttendanceFn({ sessionId, token });
+        const data = res.data || {};
+        showStatus(`Attendance marked for "${data.className || 'Class'}" — ${data.subject || 'Session'}`, 'success');
+        showToast('Attendance recorded!', 'success');
+        successRecorded = true;
+      } catch (fnErr) {
+        // If functions are not deployed on Spark plan, fall back to direct Firestore verification
+        console.warn('Callable function unavailable on Spark plan, falling back to direct Firestore verification:', fnErr.message);
+      }
+    }
+
+    // 2. Direct Firestore verification fallback for Firebase Spark (free) plan
+    if (!successRecorded) {
+      const sessionDoc = await db.collection('sessions').doc(sessionId).get();
+      if (!sessionDoc.exists) {
+        throw new Error('Session not found or has expired.');
+      }
+      const session = sessionDoc.data();
+      if (session.status !== 'active') {
+        throw new Error('This attendance session has already ended.');
+      }
+
+      // Check session expiry duration
+      const nowMs = Date.now();
+      let sessionEndMs = null;
+      if (session.endTime) {
+        if (typeof session.endTime.toMillis === 'function') sessionEndMs = session.endTime.toMillis();
+        else if (session.endTime._seconds) sessionEndMs = session.endTime._seconds * 1000;
+        else sessionEndMs = new Date(session.endTime).getTime();
+      }
+      if (sessionEndMs && nowMs > sessionEndMs + 60000) {
+        throw new Error('Session duration has expired. Attendance closed.');
+      }
+
+      // Rotating token match
+      const isCurrent = session.currentToken === token;
+      const isPrevious = Boolean(session.previousToken && session.previousToken === token);
+      if (!isCurrent && !isPrevious) {
+        throw new Error('QR code has expired. Please scan the current code on screen.');
+      }
+
+      // Prevent duplicate attendance for the same session
+      const recordRef = db.collection('attendance').doc(sessionId).collection('records').doc(currentUser.uid);
+      const existing = await recordRef.get();
+      if (existing.exists) {
+        throw new Error('Attendance has already been recorded for this session.');
+      }
+
+      // Fetch student profile details
+      let prof = userProfile || {};
+      if (!prof.name) {
+        const uDoc = await db.collection('users').doc(currentUser.uid).get();
+        if (uDoc.exists) prof = uDoc.data();
+      }
+
+      const roll = prof.rollNumber || prof.studentId || '';
+      const attendanceRecord = {
+        uid: currentUser.uid,
+        rollNumber: roll,
+        studentId: roll,
+        name: prof.name || currentUser.displayName || 'Student',
+        branch: prof.branch || '',
+        college: prof.college || 'HITAM',
+        section: prof.section || '',
+        batch: prof.batch || '',
+        sessionId: sessionId,
+        className: session.className || '',
+        subject: session.subject || '',
+        status: 'present',
+        markedAt: firebase.firestore.FieldValue.serverTimestamp()
+      };
+
+      await recordRef.set(attendanceRecord);
+      showStatus(`Attendance marked for "${session.className || 'Class'}" — ${session.subject || 'Session'}`, 'success');
+      showToast('Attendance recorded!', 'success');
+    }
+
     loadHistory();
   } catch (e) {
     console.error('Attendance verification error:', e);

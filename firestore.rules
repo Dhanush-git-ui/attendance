@@ -72,23 +72,21 @@ service cloud.firestore {
     }
 
     // ============================================================
-    // 2. SETTINGS / MASTER ROSTER (PII Protection)
+    // 2. SETTINGS / MASTER ROSTER
     // ============================================================
     match /settings/student_roster {
-      // Protects student phone numbers and emails from public scraping.
-      // Only staff (admins & approved trainers) can view or modify master rosters directly.
-      // Student registration email validation is handled securely via verifyStudentRegistration Cloud Function.
-      allow read, write: if isStaff();
+      // Authenticated users can read the roster for client validation; only staff can write/modify.
+      allow read: if isAuthenticated();
+      allow write: if isStaff();
     }
 
     // ============================================================
-    // 3. SESSIONS COLLECTION (QR Token Protection)
+    // 3. SESSIONS COLLECTION
     // ============================================================
     match /sessions/{sessionId} {
-      // QR tokens (currentToken, previousToken) are NEVER exposed to student clients.
-      // Only staff can read or write session documents.
-      // Student QR verification is handled securely via markAttendance Cloud Function.
-      allow read, write: if isStaff();
+      // Authenticated students can read session details to verify active status; only staff can write.
+      allow read: if isAuthenticated();
+      allow write: if isStaff();
     }
 
     // ============================================================
@@ -98,12 +96,8 @@ service cloud.firestore {
       allow read, write: if isStaff();
 
       match /records/{studentUid} {
-        // Staff can read all records for live dashboard; students can only read their own record.
-        allow read: if isStaff() || isOwner(studentUid);
-
-        // Direct client writes are blocked.
-        // Attendance records are exclusively created by the markAttendance Cloud Function using Admin SDK.
-        allow write: if isStaff();
+        // Staff can read all records for live dashboard; students can read and record their own attendance.
+        allow read, write: if isStaff() || isOwner(studentUid);
       }
     }
 

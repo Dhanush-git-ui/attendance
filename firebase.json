@@ -1,4 +1,19 @@
 {
+  "hosting": {
+    "public": ".",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**",
+      "functions/**",
+      "scripts/**",
+      "tests/**",
+      "backups/**",
+      "*.xlsx",
+      "*.log",
+      "firestore-debug.log"
+    ]
+  },
   "firestore": {
     "rules": "firestore.rules",
     "indexes": "firestore.indexes.json"
@@ -18,3 +33,4 @@
     }
   }
 }
+
