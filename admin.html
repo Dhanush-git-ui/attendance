@@ -143,6 +143,10 @@
         <svg class="icon-svg" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
         <span>Trainers (<span id="pending-trainers-badge" style="font-weight:700">0</span>)</span>
       </button>
+      <button class="btn btn-outline" style="padding:0.45rem 0.85rem;font-size:0.85rem;display:inline-flex;align-items:center;gap:0.4rem;color:#059669;border-color:#a7f3d0;" onclick="toggleGoogleSheetSection()" title="View live embedded Google Sheet">
+        <svg class="icon-svg" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>
+        <span>Google Sheet</span>
+      </button>
       <button class="btn btn-outline" style="padding:0.45rem 0.85rem;font-size:0.85rem;display:inline-flex;align-items:center;gap:0.4rem" onclick="openRosterModal('all')">
         <svg class="icon-svg" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
         <span>Student Roster (<span id="nav-roster-count">0</span>)</span>
@@ -185,6 +189,49 @@
         <button class="btn btn-outline" id="roster-view-btn" style="padding:0.45rem 0.9rem;font-size:0.82rem;display:none" onclick="openRosterModal('view')">
           <span>View Directory</span>
         </button>
+      </div>
+    </div>
+
+    <!-- Live Embedded Google Sheet Section -->
+    <div class="card" id="google-sheet-embed-card" style="margin-bottom:1.5rem;padding:1.25rem;border:1px solid #cbd5e1;border-radius:14px;box-shadow:0 4px 15px rgba(0,0,0,0.03);background:#fff">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.85rem;flex-wrap:wrap;gap:0.6rem">
+        <div style="display:flex;align-items:center;gap:0.65rem">
+          <div style="width:36px;height:36px;border-radius:8px;background:#ecfdf5;display:flex;align-items:center;justify-content:center;color:#059669">
+            <svg class="icon-svg" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>
+          </div>
+          <div>
+            <div style="font-weight:700;font-size:1.02rem;color:#0f172a;display:flex;align-items:center;gap:0.5rem">
+              <span>AVN 2029 DATA BASE</span>
+              <span class="badge" style="background:#dcfce7;color:#166534;font-size:0.72rem;padding:0.2rem 0.55rem;border-radius:999px;font-weight:600">LIVE GOOGLE SPREADSHEET</span>
+            </div>
+            <div style="font-size:0.82rem;color:#64748b">Direct live embedding of student rosters (BATCH - 1, BATCH - 2, BATCH - 3, Form Responses 1)</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:0.45rem;flex-wrap:wrap">
+          <button class="btn btn-primary" style="padding:0.4rem 0.85rem;font-size:0.8rem;background:#059669;border-color:#059669;display:inline-flex;align-items:center;gap:0.35rem" onclick="syncFromGoogleSheetNow()" id="sync-gsheet-btn">
+            <svg class="icon-svg" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            <span id="sync-gsheet-text">Sync Live Sheet to Database</span>
+          </button>
+          <a href="https://docs.google.com/spreadsheets/d/e/2PACX-1vQ0mIp2vQA4_06cXDCiCcE0WQfOSL_xjmdIE5a04prnhe2_lAHJU72E4PMyp6yQKMltyGwIhNazGRWy/pubhtml?widget=true&headers=false" target="_blank" rel="noopener noreferrer" class="btn btn-outline" style="padding:0.4rem 0.8rem;font-size:0.8rem;display:inline-flex;align-items:center;gap:0.35rem">
+            <svg class="icon-svg" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            <span>Open in New Tab</span>
+          </a>
+          <button class="btn btn-outline" style="padding:0.4rem 0.65rem;font-size:0.8rem" onclick="toggleSheetFullscreen()" title="Toggle Fullscreen">
+            <svg class="icon-svg" viewBox="0 0 24 24"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+          </button>
+          <button class="btn btn-outline" style="padding:0.4rem 0.65rem;font-size:0.8rem" onclick="toggleSheetCollapse()" id="toggle-sheet-collapse-btn" title="Collapse / Expand">
+            <svg class="icon-svg" id="sheet-collapse-icon" viewBox="0 0 24 24"><polyline points="18 15 12 9 6 15"/></svg>
+          </button>
+        </div>
+      </div>
+      <div id="google-sheet-iframe-wrapper" style="width:100%;height:580px;border-radius:10px;overflow:hidden;border:1px solid #e2e8f0;background:#f8fafc;position:relative;transition:height 0.25s ease">
+        <iframe 
+          id="google-sheet-iframe"
+          src="https://docs.google.com/spreadsheets/d/e/2PACX-1vQ0mIp2vQA4_06cXDCiCcE0WQfOSL_xjmdIE5a04prnhe2_lAHJU72E4PMyp6yQKMltyGwIhNazGRWy/pubhtml?widget=true&amp;headers=false"
+          style="width:100%;height:100%;border:none;display:block;"
+          loading="lazy"
+          title="AVN 2029 DATA BASE Spreadsheet">
+        </iframe>
       </div>
     </div>
 

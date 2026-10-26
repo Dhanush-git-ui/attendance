@@ -44,58 +44,86 @@ auth.onAuthStateChanged(async (user) => {
 
 // ---- Student Login (with Roll Number) ----
 async function loginStudent() {
-  const rollInput = document.getElementById('student-roll');
+  const inputEl = document.getElementById('student-identifier') || document.getElementById('student-roll');
   const passInput = document.getElementById('student-password');
   
-  if (!rollInput || !passInput) return;
+  if (!inputEl || !passInput) return;
   
-  const roll = rollInput.value.trim();
+  const identifier = inputEl.value.trim();
   const password = passInput.value;
 
-  if (!roll || !password) {
-    return showError('Please enter both your Roll Number and Password.');
+  if (!identifier || !password) {
+    return showError('Please enter your Full Name or Phone Number and Password.');
   }
 
   setLoading('student-login-btn', true);
   try {
-    let authEmail;
+    let authEmail = null;
     
-    if (roll.includes('@')) {
-      authEmail = roll.toLowerCase();
+    // 1. Direct email format
+    if (identifier.includes('@')) {
+      authEmail = identifier.toLowerCase();
     } else {
-      // Direct standard roll number email mapping
-      authEmail = `${roll.toLowerCase()}@attendx.local`;
+      // 2. Lookup in local roster (AVN 2029 DATA BASE)
+      const cleanDigits = identifier.replace(/[^0-9]/g, '');
+      const cleanText = identifier.toLowerCase().replace(/\s+/g, ' ');
+
+      if (typeof window !== 'undefined' && window.ATTENDX_ROSTER && Array.isArray(window.ATTENDX_ROSTER.students)) {
+        // Try Phone Number match first (if input contains digits)
+        if (cleanDigits.length >= 7) {
+          const phoneMatch = window.ATTENDX_ROSTER.students.find(s => {
+            const m = String(s.mobile || '').replace(/[^0-9]/g, '');
+            return m && (m === cleanDigits || m.endsWith(cleanDigits) || cleanDigits.endsWith(m));
+          });
+          if (phoneMatch && phoneMatch.email) {
+            authEmail = phoneMatch.email;
+          }
+        }
+
+        // Try Full Name match
+        if (!authEmail) {
+          const nameMatch = window.ATTENDX_ROSTER.students.find(s => {
+            const n = String(s.name || '').toLowerCase().replace(/\s+/g, ' ');
+            return n && (n === cleanText || n.includes(cleanText) || cleanText.includes(n));
+          });
+          if (nameMatch && nameMatch.email) {
+            authEmail = nameMatch.email;
+          }
+        }
+      }
+
+      // 3. Fallback: Search Firestore users collection by mobile or name
+      if (!authEmail) {
+        try {
+          if (cleanDigits.length >= 7) {
+            const pSnap = await db.collection('users').where('mobile', '==', cleanDigits).limit(1).get();
+            if (!pSnap.empty && pSnap.docs[0].data()?.email) {
+              authEmail = pSnap.docs[0].data().email;
+            }
+          }
+          if (!authEmail) {
+            const nSnap = await db.collection('users').where('name', '==', identifier).limit(1).get();
+            if (!nSnap.empty && nSnap.docs[0].data()?.email) {
+              authEmail = nSnap.docs[0].data().email;
+            }
+          }
+        } catch (_) {}
+      }
+
+      // 4. Fallback: Standard handle mapping
+      if (!authEmail) {
+        authEmail = `${identifier.toLowerCase().replace(/[^a-z0-9]/g, '')}@attendx.local`;
+      }
     }
 
     let cred;
     try {
       cred = await auth.signInWithEmailAndPassword(authEmail, password);
     } catch (authErr) {
-      // Fallback: If not found and user typed roll without @, search Firestore for custom email
-      if ((authErr.code === 'auth/user-not-found' || authErr.code === 'auth/invalid-credential') && !roll.includes('@')) {
-        try {
-          const snap = await db.collection('users')
-            .where('studentId', '==', roll.toUpperCase())
-            .limit(1)
-            .get();
-            
-          if (!snap.empty) {
-            const userDoc = snap.docs[0].data();
-            if (userDoc.email) {
-              cred = await auth.signInWithEmailAndPassword(userDoc.email, password);
-            } else {
-              throw authErr;
-            }
-          } else {
-            throw authErr;
-          }
-        } catch (dbErr) {
-          // If Firestore read fails (e.g. security rules require auth), preserve authErr
-          throw authErr;
-        }
-      } else {
-        throw authErr;
+      if (authErr.code === 'auth/user-not-found' || authErr.code === 'auth/invalid-credential' || authErr.code === 'auth/wrong-password') {
+        throw new Error('Invalid credentials. Please verify your Full Name or Phone Number and Password.');
       }
+      throw authErr;
     }
 
     let userRole = 'student';
@@ -296,6 +324,11 @@ async function onStudentEmailRegInput(val) {
         sectionInput.value = match.section || '';
         sectionInput.dataset.autofilled = 'true';
       }
+      const mobileInput = document.getElementById('reg-mobile');
+      if (mobileInput && match.mobile) {
+        mobileInput.value = match.mobile;
+        mobileInput.dataset.autofilled = 'true';
+      }
       if (batchInput && match.batch) {
         batchInput.value = match.batch;
       }
@@ -312,6 +345,66 @@ async function onStudentEmailRegInput(val) {
       hintEl.innerHTML = `<span style="color:#0284c7"><svg class="icon-svg" viewBox="0 0 24 24" style="width:14px;height:14px;vertical-align:-2px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg> New Student (Not in pre-enrolled sheet): Enter your details below to register.</span>`;
     }
   }, 250);
+}
+
+// Auto-lookup by Phone / Mobile Number
+let mobileLookupDebounce = null;
+function onStudentMobileRegInput(rawMobile) {
+  clearTimeout(mobileLookupDebounce);
+  const digits = String(rawMobile || '').replace(/[^0-9]/g, '');
+  if (digits.length < 7) return;
+
+  mobileLookupDebounce = setTimeout(() => {
+    const match = findStudentByMobile(digits);
+    const hintEl = document.getElementById('student-reg-email-hint');
+    if (!match) return;
+
+    const nameInput = document.getElementById('reg-name');
+    const emailInput = document.getElementById('reg-email');
+    const branchInput = document.getElementById('reg-branch');
+    const sectionInput = document.getElementById('reg-section');
+    const batchInput = document.getElementById('reg-batch');
+
+    verifiedRosterData = { ...match };
+
+    if (nameInput && (!nameInput.value.trim() || nameInput.dataset.autofilled === 'true')) {
+      nameInput.value = match.name || '';
+      nameInput.dataset.autofilled = 'true';
+    }
+    if (emailInput && (!emailInput.value.trim() || emailInput.dataset.autofilled === 'true') && match.email) {
+      emailInput.value = match.email;
+      emailInput.dataset.autofilled = 'true';
+    }
+    if (branchInput) {
+      branchInput.value = match.branch || '';
+      branchInput.dataset.autofilled = 'true';
+    }
+    if (sectionInput) {
+      sectionInput.value = match.section || '';
+      sectionInput.dataset.autofilled = 'true';
+    }
+    if (batchInput && match.batch) {
+      batchInput.value = match.batch;
+    }
+
+    if (hintEl) {
+      hintEl.className = 'password-match-hint text-success';
+      hintEl.innerHTML = `<svg class="icon-svg" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg><span>Verified in College Roster by Phone: <strong>${match.name}</strong> (${match.branch || 'Branch'}${match.section ? ' - Sec ' + match.section : ''}${match.batch ? ' | ' + match.batch : ''})</span>`;
+    }
+  }, 250);
+}
+
+function findStudentByMobile(mobile) {
+  if (!mobile) return null;
+  const digits = String(mobile).replace(/[^0-9]/g, '');
+  if (digits.length < 7) return null;
+  if (typeof window !== 'undefined' && window.ATTENDX_ROSTER && Array.isArray(window.ATTENDX_ROSTER.students)) {
+    return window.ATTENDX_ROSTER.students.find(s => {
+      const sm = String(s.mobile || '').replace(/[^0-9]/g, '');
+      return sm && (sm === digits || sm.endsWith(digits) || digits.endsWith(sm));
+    });
+  }
+  return null;
 }
 
 // Helper to find student in converted JSON roster
@@ -335,7 +428,10 @@ async function registerStudent() {
   const branch = document.getElementById('reg-branch') ? document.getElementById('reg-branch').value.trim() : '';
   const section = document.getElementById('reg-section') ? document.getElementById('reg-section').value.trim() : '';
   const batch = document.getElementById('reg-batch') ? document.getElementById('reg-batch').value.trim() : 'BATCH - 1';
-  const roll = document.getElementById('reg-roll') ? document.getElementById('reg-roll').value.trim() : '';
+  const rollInput = document.getElementById('reg-roll');
+  const roll = rollInput ? rollInput.value.trim() : '';
+  const mobileInput = document.getElementById('reg-mobile');
+  const mobileEntered = mobileInput ? mobileInput.value.trim().replace(/[^0-9]/g, '') : '';
   const password = document.getElementById('reg-password').value;
   const confirmPassword = document.getElementById('reg-confirm-password') ? document.getElementById('reg-confirm-password').value : password;
 
@@ -358,7 +454,7 @@ async function registerStudent() {
 
   setLoading('reg-btn', true);
   try {
-    let academicData = verifiedRosterData || findStudentInRoster(personalEmail);
+    let academicData = verifiedRosterData || findStudentInRoster(personalEmail) || (mobileEntered ? findStudentByMobile(mobileEntered) : null);
 
     // 1. Create account in Firebase Authentication using personal email
     const cred = await auth.createUserWithEmailAndPassword(personalEmail, password);
@@ -378,6 +474,7 @@ async function registerStudent() {
 
     // 3. Build student profile: using roster data if enrolled, or user-entered details if new student!
     const rollNumber = academicData?.rollNumber || roll || '';
+    const studentMobile = academicData?.mobile || mobileEntered || '';
     const studentData = {
       name: academicData?.name || name,
       college: academicData?.college || 'HITAM',
@@ -385,6 +482,7 @@ async function registerStudent() {
       section: academicData?.section || section || 'No Section',
       rollNumber: rollNumber,
       studentId: rollNumber,
+      mobile: studentMobile,
       email: personalEmail,
       personalEmail: personalEmail,
       role: 'student',
@@ -408,6 +506,7 @@ async function registerStudent() {
           students: firebase.firestore.FieldValue.arrayUnion({
             name: studentData.name,
             email: personalEmail,
+            mobile: studentMobile,
             branch: studentData.branch,
             section: studentData.section,
             batch: studentData.batch,
@@ -422,6 +521,7 @@ async function registerStudent() {
           window.ATTENDX_ROSTER.students.push({
             name: studentData.name,
             email: personalEmail,
+            mobile: studentMobile,
             branch: studentData.branch,
             section: studentData.section,
             batch: studentData.batch,

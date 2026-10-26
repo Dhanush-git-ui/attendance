@@ -67,7 +67,8 @@ function populateStudentInfo() {
 
   const rollText = document.getElementById('student-roll-text');
   const idDisplay = document.getElementById('student-id-display');
-  const labelText = roll ? `Roll No: ${roll}` : (batch ? `Batch: ${batch}` : 'Student');
+  const mobile = currentUser.mobile || (userProfile && userProfile.mobile) || '';
+  const labelText = mobile ? `Phone: ${mobile}` : (roll ? `Roll No: ${roll}` : (batch ? `Batch: ${batch}` : 'Student'));
   if (rollText) {
     rollText.textContent = labelText;
   } else if (idDisplay) {

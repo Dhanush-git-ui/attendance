@@ -1,9 +1,9 @@
 {
   "metadata": {
-    "syncedAt": "2026-10-26T06:21:11.396Z",
+    "syncedAt": "2026-10-26T06:33:41.898Z",
     "sourceFile": "AVN 2029 DATA BASE.xlsx",
-    "totalStudentsCount": 352,
-    "verifiedCompleteCount": 318,
+    "totalStudentsCount": 354,
+    "verifiedCompleteCount": 320,
     "pendingBatchCount": 29,
     "incompleteEmailCount": 5
   },
@@ -1657,6 +1657,36 @@
       "reviewReason": null,
       "sourceSheet": "BATCH - 1",
       "sourceRow": 132
+    },
+    {
+      "name": "Verification Test Student",
+      "branch": "CSE",
+      "section": "A",
+      "batch": "BATCH - 1",
+      "email": "test.student.verif@attendx.local",
+      "mobile": "",
+      "rollNumber": "",
+      "studentId": "",
+      "college": "HITAM",
+      "status": "verified",
+      "reviewReason": null,
+      "sourceSheet": "BATCH - 1",
+      "sourceRow": 134
+    },
+    {
+      "name": "Verification Student 2",
+      "branch": "GENERAL",
+      "section": "No Section",
+      "batch": "BATCH - 1",
+      "email": "test.student2.verif@attendx.local",
+      "mobile": "",
+      "rollNumber": "",
+      "studentId": "",
+      "college": "HITAM",
+      "status": "verified",
+      "reviewReason": null,
+      "sourceSheet": "BATCH - 1",
+      "sourceRow": 135
     },
     {
       "name": "N. Akshitha",
