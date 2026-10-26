@@ -1,0 +1,119 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ============================================================
+    // HELPER FUNCTIONS (Safe with exists() guards)
+    // ============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function userExists() {
+      return isAuthenticated() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return userExists() 
+        && ('role' in getUserData()) 
+        && getUserData().role == 'admin';
+    }
+
+    // STRICT: Never treat a missing trainer status as approved.
+    // Must explicitly have the 'status' field equal to 'approved'.
+    function isApprovedTrainer() {
+      return userExists() 
+        && ('role' in getUserData()) 
+        && getUserData().role == 'trainer' 
+        && ('status' in getUserData())
+        && getUserData().status == 'approved';
+    }
+
+    function isStaff() {
+      return isAdmin() || isApprovedTrainer();
+    }
+
+    // ============================================================
+    // 1. USERS COLLECTION
+    // ============================================================
+    match /users/{userId} {
+      // Authenticated users can read profiles for profile lookup
+      allow read: if isAuthenticated();
+
+      // On creation:
+      // - Must write to their own UID
+      // - Students can register with role: 'student'
+      // - Trainers can register, but MUST have status: 'pending'
+      // - No user can self-assign role: 'admin' or status: 'approved'
+      allow create: if isOwner(userId)
+                    && (
+                      (request.resource.data.role == 'student') ||
+                      (request.resource.data.role == 'trainer' && request.resource.data.status == 'pending')
+                    );
+
+      // On update:
+      // - Regular users can update their profile (e.g. name), but CANNOT change their 'role' or 'status'
+      // - Only Admins can modify roles or approve trainers
+      allow update: if (isOwner(userId) 
+                        && (!('role' in request.resource.data) || request.resource.data.role == resource.data.role)
+                        && (!('status' in request.resource.data) || !('status' in resource.data) || request.resource.data.status == resource.data.status))
+                    || isAdmin();
+
+      // Only Admins can delete user profiles
+      allow delete: if isAdmin();
+    }
+
+    // ============================================================
+    // 2. SETTINGS / MASTER ROSTER (PII Protection)
+    // ============================================================
+    match /settings/student_roster {
+      // Protects student phone numbers and emails from public scraping.
+      // Only staff (admins & approved trainers) can view or modify master rosters directly.
+      // Student registration email validation is handled securely via verifyStudentRegistration Cloud Function.
+      allow read, write: if isStaff();
+    }
+
+    // ============================================================
+    // 3. SESSIONS COLLECTION (QR Token Protection)
+    // ============================================================
+    match /sessions/{sessionId} {
+      // QR tokens (currentToken, previousToken) are NEVER exposed to student clients.
+      // Only staff can read or write session documents.
+      // Student QR verification is handled securely via markAttendance Cloud Function.
+      allow read, write: if isStaff();
+    }
+
+    // ============================================================
+    // 4. ATTENDANCE COLLECTION & RECORDS SUBCOLLECTION
+    // ============================================================
+    match /attendance/{sessionId} {
+      allow read, write: if isStaff();
+
+      match /records/{studentUid} {
+        // Staff can read all records for live dashboard; students can only read their own record.
+        allow read: if isStaff() || isOwner(studentUid);
+
+        // Direct client writes are blocked.
+        // Attendance records are exclusively created by the markAttendance Cloud Function using Admin SDK.
+        allow write: if isStaff();
+      }
+    }
+
+    // ============================================================
+    // 5. COLLECTION GROUP QUERY FOR STUDENT HISTORY
+    // Supports: db.collectionGroup('records').where('uid', '==', currentUser.uid)
+    // ============================================================
+    match /{path=**}/records/{recordDoc} {
+      allow read: if isStaff() 
+                  || (isAuthenticated() && resource.data.uid == request.auth.uid);
+    }
+  }
+}

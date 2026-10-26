@@ -1,4 +1,10 @@
 {
+  "name": "attendance",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "npx serve .",
+    "start": "npx serve ."
+  },
   "dependencies": {
     "firebase": "^12.19.0"
   }

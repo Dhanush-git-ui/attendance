@@ -9,23 +9,96 @@ let processing  = false;
 
 // ---- Auth Guard ----
 auth.onAuthStateChanged(async (user) => {
-  if (!user) { window.location.href = 'index.html'; return; }
-  const doc = await db.collection('users').doc(user.uid).get();
-  if (!doc.exists || doc.data().role !== 'student') {
-    window.location.href = 'index.html'; return;
+  if (!user) {
+    window.location.href = 'index.html';
+    return;
   }
-  currentUser = { uid: user.uid, ...doc.data() };
-  populateStudentInfo();
-  loadHistory();
+
+  try {
+    let profileData = {};
+    try {
+      const doc = await db.collection('users').doc(user.uid).get();
+      if (doc.exists) {
+        if (doc.data().role !== 'student') {
+          window.location.href = 'index.html';
+          return;
+        }
+        profileData = doc.data();
+      }
+    } catch (fsErr) {
+      console.warn('Firestore user lookup restricted by security rules (using local profile):', fsErr);
+    }
+
+    if (!profileData.name && !profileData.rollNumber) {
+      const cached = localStorage.getItem(`user_profile_${user.uid}`);
+      if (cached) {
+        try { profileData = JSON.parse(cached); } catch (_) {}
+      }
+    }
+
+    if (!profileData.rollNumber) {
+      profileData.rollNumber = '';
+      profileData.studentId = '';
+    }
+
+    if (!profileData.name) {
+      profileData.name = user.displayName || 'Student';
+    }
+
+    currentUser = { uid: user.uid, ...profileData };
+    populateStudentInfo();
+    loadHistory();
+  } catch(e) {
+    console.error('User lookup error:', e);
+    window.location.href = 'index.html';
+  }
 });
 
 // ---- Populate UI ----
 function populateStudentInfo() {
-  const roll = currentUser.rollNumber || currentUser.studentId || '—';
-  document.getElementById('student-name-display').textContent = currentUser.name;
-  document.getElementById('student-fullname').textContent     = currentUser.name;
-  document.getElementById('student-id-display').textContent   = 'Roll No: ' + roll;
-  document.getElementById('student-avatar').textContent       = currentUser.name.charAt(0).toUpperCase();
+  const roll = currentUser.rollNumber || currentUser.studentId || '';
+  const batch = currentUser.batch || '';
+  const name = currentUser.name || 'Student';
+  
+  const nameDisplay = document.getElementById('student-name-display');
+  const fullname = document.getElementById('student-fullname');
+  if (nameDisplay) nameDisplay.textContent = name;
+  if (fullname) fullname.textContent = name;
+
+  const rollText = document.getElementById('student-roll-text');
+  const idDisplay = document.getElementById('student-id-display');
+  const labelText = roll ? `Roll No: ${roll}` : (batch ? `Batch: ${batch}` : 'Student');
+  if (rollText) {
+    rollText.textContent = labelText;
+  } else if (idDisplay) {
+    idDisplay.textContent = labelText;
+  }
+
+  const avatar = document.getElementById('student-avatar');
+  if (avatar) avatar.textContent = name.charAt(0).toUpperCase();
+
+  // Branch badge
+  const branchBadge = document.getElementById('student-branch-badge');
+  if (branchBadge) {
+    if (currentUser.branch) {
+      branchBadge.textContent = currentUser.branch;
+      branchBadge.style.display = 'inline-flex';
+    } else {
+      branchBadge.style.display = 'none';
+    }
+  }
+
+  // College info
+  const collegeWrap = document.getElementById('student-college-wrap');
+  const collegeText = document.getElementById('student-college-text');
+  if (collegeWrap && collegeText) {
+    if (currentUser.college) {
+      collegeText.textContent = currentUser.college;
+      collegeWrap.style.display = 'inline-flex';
+    } else {
+      collegeWrap.style.display = 'none';
+    }
+  }
 }
 
 // ---- Start QR Scanner ----
@@ -86,91 +159,21 @@ async function onScanSuccess(rawValue) {
   }
 
   await stopScanner();
-  showStatus('Verifying attendance...', 'info');
+  showStatus('Verifying attendance with server...', 'info');
 
   try {
-    // ---- VALIDATION CHECKS ----
+    const markAttendanceFn = firebase.functions().httpsCallable('markAttendance');
+    const res = await markAttendanceFn({ sessionId, token });
+    const data = res.data || {};
 
-    // 1. Fetch session
-    const sessionSnap = await db.collection('sessions').doc(sessionId).get();
-    if (!sessionSnap.exists) {
-      showStatus('Session not found or has expired.', 'error');
-      processing = false; return;
-    }
-
-    const session = sessionSnap.data();
-
-    // 2. Session must be active
-    if (session.status !== 'active') {
-      showStatus('This session has already ended.', 'error');
-      processing = false; return;
-    }
-
-    // 3. Token validation: Matches currentToken OR previousToken (grace window)
-    const isCurrent = session.currentToken === token;
-    const isPrevious = Boolean(session.previousToken && session.previousToken === token);
-
-    if (!isCurrent && !isPrevious) {
-      showStatus('QR code expired. Please scan the current code on screen.', 'error');
-      processing = false; return;
-    }
-
-    // 4. Token freshness check
-    // If it's the previous token (rotated during scan), allow 45s grace period
-    if (isPrevious && !isCurrent) {
-      if (session.tokenUpdatedAt && session.tokenUpdatedAt.toMillis) {
-        const timeSinceRot = Math.abs(Date.now() - session.tokenUpdatedAt.toMillis());
-        const graceLimit = ((session.rotationSecs || 10) + 45) * 1000;
-        if (timeSinceRot > graceLimit) {
-          showStatus('QR code expired. Please scan the current code on screen.', 'error');
-          processing = false; return;
-        }
-      }
-    }
-
-    // If it's the current active token on screen, allow generous tolerance (up to 3 min)
-    // to handle mobile device clock skew, network latency, and presentation delays
-    if (isCurrent && session.tokenUpdatedAt && session.tokenUpdatedAt.toMillis) {
-      const tokenAge = Date.now() - session.tokenUpdatedAt.toMillis();
-      const maxAge = Math.max((session.rotationSecs || 10) * 8, 180) * 1000;
-      if (tokenAge > maxAge) {
-        showStatus('QR code is stale. Please ask the instructor to refresh the session.', 'error');
-        processing = false; return;
-      }
-    }
-
-    // 5. Not already marked
-    const existingRef = db.collection('attendance').doc(sessionId)
-      .collection('records').doc(currentUser.uid);
-    const existing = await existingRef.get();
-    if (existing.exists) {
-      showStatus('Attendance already marked for this session.', 'success');
-      showToast('You are already marked present!', 'info');
-      loadHistory();
-      processing = false; return;
-    }
-
-    // ---- MARK ATTENDANCE ----
-    const roll = currentUser.rollNumber || currentUser.studentId || '';
-    await existingRef.set({
-      name: currentUser.name,
-      rollNumber: roll,
-      studentId: roll,
-      uid: currentUser.uid,
-      markedAt: firebase.firestore.FieldValue.serverTimestamp(),
-      status: 'present',
-      sessionId,
-      className: session.className,
-      subject: session.subject
-    });
-
-    showStatus(`Attendance marked for "${session.className}" — ${session.subject}`, 'success');
+    showStatus(`Attendance marked for "${data.className || 'Class'}" — ${data.subject || 'Session'}`, 'success');
     showToast('Attendance recorded!', 'success');
     loadHistory();
-
   } catch (e) {
-    console.error(e);
-    showStatus('Failed to mark attendance. Please try again.', 'error');
+    console.error('Attendance verification error:', e);
+    const msg = e.message || 'Failed to mark attendance. Please scan current code.';
+    showStatus(msg, 'error');
+    showToast(msg, 'error');
   }
 
   processing = false;
@@ -186,32 +189,15 @@ async function loadHistory() {
 
   try {
     let records = [];
-    const roll = currentUser.rollNumber || currentUser.studentId || '';
-
-    // First attempt: try collectionGroup with try/catch
     try {
       const snap = await db.collectionGroup('records')
-        .where('studentId', '==', roll)
+        .where('uid', '==', currentUser.uid)
         .orderBy('markedAt', 'desc')
-        .limit(20)
+        .limit(25)
         .get();
       snap.forEach(doc => records.push(doc.data()));
     } catch (groupErr) {
-      console.warn('CollectionGroup notice, falling back to direct lookup:', groupErr.message);
-    }
-
-    if (!records.length) {
-      // Query attendance subcollection by current user UID across recent sessions
-      const sessions = await db.collection('sessions').orderBy('startTime', 'desc').limit(25).get().catch(() => ({ docs: [] }));
-      for (const sDoc of sessions.docs) {
-        try {
-          const record = await db.collection('attendance').doc(sDoc.id)
-            .collection('records').doc(currentUser.uid).get();
-          if (record.exists) {
-            records.push({ ...record.data(), sessionId: sDoc.id });
-          }
-        } catch (e) {}
-      }
+      console.warn('CollectionGroup notice:', groupErr.message);
     }
 
     renderHistory(records);
@@ -275,5 +261,9 @@ function showToast(msg, type = 'info') {
 
 function logout() {
   if (html5QrCode && scanning) html5QrCode.stop();
-  auth.signOut().then(() => window.location.href = 'index.html');
+  if (auth.currentUser) {
+    auth.signOut().then(() => window.location.href = 'index.html');
+  } else {
+    window.location.href = 'index.html';
+  }
 }
