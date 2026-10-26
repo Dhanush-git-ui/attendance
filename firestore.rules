@@ -1,10 +1,6 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-
-    // ============================================================
-    // HELPER FUNCTIONS (Safe with exists() guards)
-    // ============================================================
     function isAuthenticated() {
       return request.auth != null;
     }
@@ -22,18 +18,12 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return userExists() 
-        && ('role' in getUserData()) 
-        && getUserData().role == 'admin';
+      return userExists() && getUserData().role == 'admin';
     }
 
-    // STRICT: Never treat a missing trainer status as approved.
-    // Must explicitly have the 'status' field equal to 'approved'.
     function isApprovedTrainer() {
-      return userExists() 
-        && ('role' in getUserData()) 
-        && getUserData().role == 'trainer' 
-        && ('status' in getUserData())
+      return userExists()
+        && getUserData().role == 'trainer'
         && getUserData().status == 'approved';
     }
 
@@ -41,73 +31,62 @@ service cloud.firestore {
       return isAdmin() || isApprovedTrainer();
     }
 
-    // ============================================================
-    // 1. USERS COLLECTION
-    // ============================================================
     match /users/{userId} {
-      // Allow read for profile lookup and unauthenticated sign-in resolution (name/phone -> email)
-      allow read: if true;
+      // Profiles contain personal information. A user can read only their own profile;
+      // administrators can review and manage profiles.
+      allow get: if isOwner(userId) || isAdmin();
+      allow list: if isAdmin();
 
-      // On creation:
-      // - Must write to their own UID
-      // - Students can register with role: 'student'
-      // - Trainers can register, but MUST have status: 'pending'
-      // - No user can self-assign role: 'admin' or status: 'approved'
-      allow create: if isOwner(userId)
-                    && (
-                      (request.resource.data.role == 'student') ||
-                      (request.resource.data.role == 'trainer' && request.resource.data.status == 'pending')
-                    );
+      // Clients may create only a pending student stub for their authenticated email.
+      // A trusted callable function promotes it after matching the private roster.
+      allow create: if isAdmin()
+        || (isOwner(userId)
+          && request.resource.data.email == request.auth.token.email
+          && (
+            (request.resource.data.keys().hasOnly(['email', 'role', 'status'])
+              && request.resource.data.role == 'student'
+              && request.resource.data.status == 'pending')
+            || (request.resource.data.keys().hasOnly(['name', 'email', 'department', 'role', 'status', 'createdAt'])
+              && request.resource.data.role == 'trainer'
+              && request.resource.data.status == 'pending')
+          ));
 
-      // On update:
-      // - Regular users can update their profile (e.g. name), but CANNOT change their 'role' or 'status'
-      // - Only Admins can modify roles or approve trainers
-      allow update: if (isOwner(userId) 
-                        && (!('role' in request.resource.data) || request.resource.data.role == resource.data.role)
-                        && (!('status' in request.resource.data) || !('status' in resource.data) || request.resource.data.status == resource.data.status))
-                    || isAdmin();
-
-      // Only Admins can delete user profiles
+      allow update: if isAdmin()
+        || (isOwner(userId)
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['name', 'mobile', 'updatedAt'])
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.status == resource.data.status);
       allow delete: if isAdmin();
     }
 
-    // ============================================================
-    // 2. SETTINGS / MASTER ROSTER
-    // ============================================================
     match /settings/student_roster {
-      // Roster can be read publicly for validation; staff or newly registered users can write/merge
-      allow read: if true;
-      allow write: if isStaff() || isAuthenticated();
+      // The roster contains student contact details. Read and write through staff pages
+      // only; student lookup and registration use callable functions.
+      allow read, write: if isStaff();
     }
 
-    // ============================================================
-    // 3. SESSIONS COLLECTION
-    // ============================================================
     match /sessions/{sessionId} {
-      // Authenticated students can read session details to verify active status; only staff can write.
-      allow read: if isAuthenticated();
-      allow write: if isStaff();
+      // Session documents contain rotating QR tokens. Students submit scans to the
+      // markAttendance callable and never read token-bearing session documents.
+      allow read, write: if isStaff();
     }
 
-    // ============================================================
-    // 4. ATTENDANCE COLLECTION & RECORDS SUBCOLLECTION
-    // ============================================================
     match /attendance/{sessionId} {
       allow read, write: if isStaff();
 
       match /records/{studentUid} {
-        // Staff can read all records for live dashboard; students can read and record their own attendance.
-        allow read, write: if isStaff() || isOwner(studentUid);
+        allow read: if isStaff() || isOwner(studentUid);
+        // Client attendance writes bypass QR validation. Callable functions use Admin SDK.
+        allow create, update, delete: if isStaff();
       }
     }
 
-    // ============================================================
-    // 5. COLLECTION GROUP QUERY FOR STUDENT HISTORY
-    // Supports: db.collectionGroup('records').where('uid', '==', currentUser.uid)
-    // ============================================================
     match /{path=**}/records/{recordDoc} {
-      allow read: if isStaff() 
-                  || (isAuthenticated() && resource.data.uid == request.auth.uid);
+      allow read: if isStaff()
+        || (isAuthenticated() && resource.data.uid == request.auth.uid);
+      allow write: if isStaff();
     }
   }
 }
+

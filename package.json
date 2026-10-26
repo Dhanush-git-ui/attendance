@@ -2,8 +2,9 @@
   "name": "attendance",
   "version": "1.0.0",
   "scripts": {
-    "dev": "npx serve .",
-    "start": "npx serve .",
+    "build": "node scripts/build-vercel.cjs",
+    "dev": "npm run build && npx serve dist",
+    "start": "npm run build && npx serve dist",
     "test": "node tests/verify_registration_and_review.cjs && node tests/verify_mark_attendance.cjs",
     "test:registration": "node tests/verify_registration_and_review.cjs",
     "test:attendance": "node tests/verify_mark_attendance.cjs",
@@ -13,7 +14,5 @@
     "sync:daemon:stop": "launchctl unload ~/Library/LaunchAgents/com.attendx.excelsync.plist 2>/dev/null || true",
     "sync:daemon:status": "launchctl list | grep attendx || echo 'Daemon not running'"
   },
-  "dependencies": {
-    "firebase": "^12.19.0"
-  }
+  "dependencies": { "firebase": "^12.19.0" }
 }

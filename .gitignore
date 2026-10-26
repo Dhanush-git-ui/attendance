@@ -30,3 +30,9 @@ scripts/final_roster_payload.json
 *-adminsdk-*.json
 service-account*.json
 credentials.json
+
+# Private roster copies and sanitized deployment output
+private-data/
+data/roster.json
+js/roster-data.js
+dist/

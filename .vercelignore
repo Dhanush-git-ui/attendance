@@ -1,0 +1,6 @@
+# Vercel build output is an explicit public-file allowlist.
+dist/
+# Private roster data and generated browser bundles.
+private-data/
+data/roster.json
+js/roster-data.js

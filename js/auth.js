@@ -1,3 +1,8 @@
+// Global state for registration roster verification & lookup debouncing
+var verifiedRosterData = null;
+var emailLookupDebounce = null;
+var mobileLookupDebounce = null;
+
 // ---- Role Tabs Switcher (Student / Trainer / Overall Admin) ----
 function switchRoleTab(role) {
   ['student', 'trainer', 'admin'].forEach(r => {
@@ -61,185 +66,34 @@ function getMergedRosterStudents() {
   return list;
 }
 
-// ---- Student Login (supports Full Name, Phone Number, or Email) ----
+// ---- Student Login (email address only; roster contact data stays private) ----
 async function loginStudent() {
   const inputEl = document.getElementById('student-identifier') || document.getElementById('student-roll');
   const passInput = document.getElementById('student-password');
-  
   if (!inputEl || !passInput) return;
-  
-  const identifier = inputEl.value.trim();
-  const password = passInput.value;
 
-  if (!identifier || !password) {
-    return showError('Please enter your Phone Number, Full Name, or Email, and your Password.');
+  const email = inputEl.value.trim().toLowerCase();
+  const password = passInput.value;
+  if (!email || !password) return showError('Enter your registered email address and password.');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return showError('Sign in with your registered email address. Phone and name lookup has been disabled to protect student information.');
   }
 
   setLoading('student-login-btn', true);
   try {
-    let authEmail = null;
-    
-    // 1. Direct email format
-    if (identifier.includes('@')) {
-      authEmail = identifier.toLowerCase();
-    } else {
-      const cleanDigits = identifier.replace(/[^0-9]/g, '');
-      const cleanText = identifier.toLowerCase().replace(/\s+/g, ' ');
-      const rosterList = getMergedRosterStudents();
-
-      // 2. Local Roster & LocalStorage Phone Match
-      if (cleanDigits.length >= 7) {
-        const phoneMatch = rosterList.find(s => {
-          const m = String(s.mobile || '').replace(/[^0-9]/g, '');
-          return m && (m === cleanDigits || m.endsWith(cleanDigits) || cleanDigits.endsWith(m));
-        });
-        if (phoneMatch && phoneMatch.email) {
-          authEmail = phoneMatch.email;
-        }
-      }
-
-      // 3. Local Roster & LocalStorage Name Match
-      if (!authEmail && cleanText.length >= 2) {
-        const nameMatch = rosterList.find(s => {
-          const n = String(s.name || '').toLowerCase().replace(/\s+/g, ' ');
-          return n && (n === cleanText || n.includes(cleanText) || cleanText.includes(n));
-        });
-        if (nameMatch && nameMatch.email) {
-          authEmail = nameMatch.email;
-        }
-      }
-
-      // 4. Firestore Cloud Lookup (for newly registered students not in static bundle)
-      if (!authEmail) {
-        try {
-          // 4a. Mobile lookup in Firestore 'users'
-          if (cleanDigits.length >= 7) {
-            let pSnap = await db.collection('users').where('mobile', '==', cleanDigits).limit(1).get();
-            if (pSnap.empty && cleanDigits.length > 10) {
-              pSnap = await db.collection('users').where('mobile', '==', cleanDigits.slice(-10)).limit(1).get();
-            }
-            if (pSnap.empty && cleanDigits.length === 10) {
-              pSnap = await db.collection('users').where('mobile', '==', '91' + cleanDigits).limit(1).get();
-            }
-            if (!pSnap.empty && pSnap.docs[0].data()?.email) {
-              authEmail = pSnap.docs[0].data().email;
-            }
-          }
-
-          // 4b. Name lookup in Firestore 'users'
-          if (!authEmail && cleanText.length >= 2) {
-            let nSnap = await db.collection('users').where('name', '==', identifier).limit(1).get();
-            if (nSnap.empty) {
-              const allStudentsSnap = await db.collection('users').where('role', '==', 'student').limit(50).get();
-              allStudentsSnap.forEach(d => {
-                if (authEmail) return;
-                const dData = d.data();
-                const dName = String(dData.name || '').toLowerCase().replace(/\s+/g, ' ');
-                if (dName && (dName === cleanText || dName.includes(cleanText) || cleanText.includes(dName))) {
-                  authEmail = dData.email;
-                }
-              });
-            } else if (nSnap.docs[0].data()?.email) {
-              authEmail = nSnap.docs[0].data().email;
-            }
-          }
-
-          // 4c. Cloud Master Roster document lookup
-          if (!authEmail) {
-            const rosterDoc = await db.collection('settings').doc('student_roster').get();
-            if (rosterDoc.exists) {
-              const cloudStudents = rosterDoc.data().students || [];
-              if (cleanDigits.length >= 7) {
-                const cloudPhoneMatch = cloudStudents.find(s => {
-                  const m = String(s.mobile || '').replace(/[^0-9]/g, '');
-                  return m && (m === cleanDigits || m.endsWith(cleanDigits) || cleanDigits.endsWith(m));
-                });
-                if (cloudPhoneMatch && cloudPhoneMatch.email) {
-                  authEmail = cloudPhoneMatch.email;
-                }
-              }
-              if (!authEmail && cleanText.length >= 2) {
-                const cloudNameMatch = cloudStudents.find(s => {
-                  const n = String(s.name || '').toLowerCase().replace(/\s+/g, ' ');
-                  return n && (n === cleanText || n.includes(cleanText) || cleanText.includes(n));
-                });
-                if (cloudNameMatch && cloudNameMatch.email) {
-                  authEmail = cloudNameMatch.email;
-                }
-              }
-            }
-          }
-        } catch (fsErr) {
-          console.warn('Firestore directory lookup notice:', fsErr);
-        }
-      }
-
-      // 5. If STILL not found:
-      if (!authEmail) {
-        if (/^[a-zA-Z0-9_-]+$/.test(identifier) && cleanDigits.length < 7) {
-          authEmail = `${identifier.toLowerCase()}@attendx.local`;
-        } else {
-          return showError(`Could not find an account matching "${identifier}". Please check your spelling, or sign in using your registered Email address.`);
-        }
-      }
-    }
-
-    let cred;
-    try {
-      cred = await auth.signInWithEmailAndPassword(authEmail, password);
-    } catch (authErr) {
-      if (authErr.code === 'auth/user-not-found') {
-        throw new Error(`No account found for "${authEmail}". If you haven't registered yet, please click "Create account".`);
-      } else if (authErr.code === 'auth/wrong-password' || authErr.code === 'auth/invalid-credential') {
-        throw new Error('Incorrect password. Please verify your password and try again.');
-      }
-      throw authErr;
-    }
-
-    let userRole = 'student';
-    try {
-      const doc = await db.collection('users').doc(cred.user.uid).get();
-      if (doc.exists) {
-        userRole = doc.data().role || 'student';
-      } else {
-        const newProfile = {
-          name: cred.user.displayName || identifier,
-          email: cred.user.email,
-          role: 'student',
-          status: 'active',
-          updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-        };
-        await db.collection('users').doc(cred.user.uid).set(newProfile, { merge: true });
-      }
-    } catch (fsErr) {
-      console.warn('Firestore doc read restricted, using local profile or role student:', fsErr);
-      const cached = localStorage.getItem(`user_profile_${cred.user.uid}`);
-      if (cached) {
-        try { userRole = JSON.parse(cached).role || 'student'; } catch (_) {}
-      }
-    }
-
-    if (userRole !== 'student') {
+    const cred = await auth.signInWithEmailAndPassword(email, password);
+    const profile = await db.collection('users').doc(cred.user.uid).get();
+    if (!profile.exists || profile.data().role !== 'student') {
       await auth.signOut();
-      showError('This account is not a student account.');
-      return;
+      return showError('Student registration is incomplete. Contact your administrator.');
     }
-
-    // Best-effort notice for unverified personal email without blocking access
-    const isLocalMock = cred.user.email && cred.user.email.endsWith('@attendx.local');
-    if (!isLocalMock && !cred.user.emailVerified) {
-      console.log('Notice: Email verification link was sent to', cred.user.email);
-    }
-
     window.location.href = 'student.html';
-  } catch (e) {
-    showError(e.message || getFriendlyError(e.code));
+  } catch (error) {
+    showError(error.message || getFriendlyError(error.code));
   } finally {
     setLoading('student-login-btn', false);
   }
-}
-
-// ---- Open & Close Student Registration Modal ----
+}// ---- Open & Close Student Registration Modal ----
 function openStudentRegister() {
   const modal = document.getElementById('register-modal');
   if (modal) {
@@ -358,293 +212,135 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-// ---- Student Roster Auto-Check & Pre-population by Personal Email ----
-let emailLookupDebounce = null;
-let verifiedRosterData = null;
+// ---- Student Roster Lookup (private data stays behind callable functions) ----
+var registrationLookupSequence = 0;
 
 async function onStudentEmailRegInput(val) {
   clearTimeout(emailLookupDebounce);
+  const sequence = ++registrationLookupSequence;
   const email = (val || '').trim().toLowerCase();
   const hintEl = document.getElementById('roster-match-hint');
   if (!hintEl) return;
 
-  clearTimeout(emailLookupDebounce);
-
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  if (!email || !emailRegex.test(email)) {
-    hintEl.innerHTML = '';
+  verifiedRosterData = null;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    hintEl.textContent = '';
     hintEl.className = 'password-match-hint';
-    verifiedRosterData = null;
     return;
   }
 
-  emailLookupDebounce = setTimeout(() => {
-    // 1. Instant client-side lookup from converted JSON roster
-    const match = findStudentInRoster(email);
+  hintEl.textContent = 'Checking your college roster…';
+  hintEl.className = 'password-match-hint';
 
-    const nameInput = document.getElementById('reg-name');
-    const branchInput = document.getElementById('reg-branch');
-    const sectionInput = document.getElementById('reg-section');
-    const batchInput = document.getElementById('reg-batch');
-    const rollInput = document.getElementById('reg-roll');
+  emailLookupDebounce = setTimeout(async () => {
+    try {
+      const verify = firebase.functions().httpsCallable('verifyStudentRegistration');
+      const result = await verify({ email });
+      if (sequence !== registrationLookupSequence) return;
+      const student = result.data && result.data.student;
+      if (!student) throw new Error('Your email was not found in the verified college roster.');
 
-    if (match) {
-      verifiedRosterData = { ...match, email };
-
-      if (nameInput && (!nameInput.value.trim() || nameInput.dataset.autofilled === 'true')) {
-        nameInput.value = match.name || '';
-        nameInput.dataset.autofilled = 'true';
+      verifiedRosterData = { ...student, email };
+      for (const [id, value] of Object.entries({
+        'reg-name': student.name,
+        'reg-branch': student.branch,
+        'reg-section': student.section,
+        'reg-batch': student.batch,
+        'reg-roll': student.rollNumber
+      })) {
+        const input = document.getElementById(id);
+        if (input && value) input.value = value;
       }
-      if (branchInput) {
-        branchInput.value = match.branch || '';
-        branchInput.dataset.autofilled = 'true';
-      }
-      if (sectionInput) {
-        sectionInput.value = match.section || '';
-        sectionInput.dataset.autofilled = 'true';
-      }
-      const mobileInput = document.getElementById('reg-mobile');
-      if (mobileInput && match.mobile) {
-        mobileInput.value = match.mobile;
-        mobileInput.dataset.autofilled = 'true';
-      }
-      if (batchInput && match.batch) {
-        batchInput.value = match.batch;
-      }
-      if (rollInput && match.rollNumber) {
-        rollInput.value = match.rollNumber;
-      }
-
+      hintEl.textContent = `Verified in College Roster: ${student.name} (${student.branch || 'Branch'}${student.section ? ' - Sec ' + student.section : ''}${student.batch ? ' | ' + student.batch : ''})`;
       hintEl.className = 'password-match-hint text-success';
-      hintEl.innerHTML = `<svg class="icon-svg" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg><span>Verified in College Roster: <strong>${match.name}</strong> (${match.branch || 'Branch'}${match.section ? ' - Sec ' + match.section : ''}${match.batch ? ' | ' + match.batch : ''})</span>`;
-    } else {
-      // Student is NOT present in Excel sheet -> DO NOT BLOCK! Allow manual entry smoothly
+    } catch (error) {
+      if (sequence !== registrationLookupSequence) return;
       verifiedRosterData = null;
-      hintEl.className = 'password-match-hint';
-      hintEl.innerHTML = `<span style="color:#0284c7"><svg class="icon-svg" viewBox="0 0 24 24" style="width:14px;height:14px;vertical-align:-2px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg> New Student (Not in pre-enrolled sheet): Enter your details below to register.</span>`;
+      hintEl.textContent = error.message || 'Could not verify this email. Please contact your administrator.';
+      hintEl.className = 'password-match-hint text-warn';
     }
   }, 250);
 }
 
-// Auto-lookup by Phone / Mobile Number
-let mobileLookupDebounce = null;
-function onStudentMobileRegInput(rawMobile) {
-  clearTimeout(mobileLookupDebounce);
-  const digits = String(rawMobile || '').replace(/[^0-9]/g, '');
-  if (digits.length < 7) return;
-
-  mobileLookupDebounce = setTimeout(() => {
-    const match = findStudentByMobile(digits);
-    const hintEl = document.getElementById('student-reg-email-hint');
-    if (!match) return;
-
-    const nameInput = document.getElementById('reg-name');
-    const emailInput = document.getElementById('reg-email');
-    const branchInput = document.getElementById('reg-branch');
-    const sectionInput = document.getElementById('reg-section');
-    const batchInput = document.getElementById('reg-batch');
-
-    verifiedRosterData = { ...match };
-
-    if (nameInput && (!nameInput.value.trim() || nameInput.dataset.autofilled === 'true')) {
-      nameInput.value = match.name || '';
-      nameInput.dataset.autofilled = 'true';
-    }
-    if (emailInput && (!emailInput.value.trim() || emailInput.dataset.autofilled === 'true') && match.email) {
-      emailInput.value = match.email;
-      emailInput.dataset.autofilled = 'true';
-    }
-    if (branchInput) {
-      branchInput.value = match.branch || '';
-      branchInput.dataset.autofilled = 'true';
-    }
-    if (sectionInput) {
-      sectionInput.value = match.section || '';
-      sectionInput.dataset.autofilled = 'true';
-    }
-    if (batchInput && match.batch) {
-      batchInput.value = match.batch;
-    }
-
-    if (hintEl) {
-      hintEl.className = 'password-match-hint text-success';
-      hintEl.innerHTML = `<svg class="icon-svg" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg><span>Verified in College Roster by Phone: <strong>${match.name}</strong> (${match.branch || 'Branch'}${match.section ? ' - Sec ' + match.section : ''}${match.batch ? ' | ' + match.batch : ''})</span>`;
-    }
-  }, 250);
-}
-
-function findStudentByMobile(mobile) {
-  if (!mobile) return null;
-  const digits = String(mobile).replace(/[^0-9]/g, '');
-  if (digits.length < 7) return null;
-  if (typeof window !== 'undefined' && window.ATTENDX_ROSTER && Array.isArray(window.ATTENDX_ROSTER.students)) {
-    return window.ATTENDX_ROSTER.students.find(s => {
-      const sm = String(s.mobile || '').replace(/[^0-9]/g, '');
-      return sm && (sm === digits || sm.endsWith(digits) || digits.endsWith(sm));
-    });
+function onStudentMobileRegInput() {
+  verifiedRosterData = null;
+  const hintEl = document.getElementById('student-reg-email-hint');
+  if (hintEl) {
+    hintEl.textContent = 'Enter your college roster email to verify your registration.';
+    hintEl.className = 'password-match-hint';
   }
-  return null;
 }
 
-// Helper to find student in converted JSON roster
-function findStudentInRoster(email) {
-  if (!email) return null;
-  const clean = String(email).trim().toLowerCase();
-  if (typeof window !== 'undefined' && window.ATTENDX_ROSTER && Array.isArray(window.ATTENDX_ROSTER.students)) {
-    return window.ATTENDX_ROSTER.students.find(s => String(s.email || '').trim().toLowerCase() === clean);
-  }
-  return null;
-}
+function findStudentByMobile() { return null; }
+function findStudentInRoster() { return null; }
 
 // Backward-compatible alias for any legacy callers
 const onStudentRollRegInput = onStudentEmailRegInput;
 
 // ---- Register Student ----
 async function registerStudent() {
-  const name = document.getElementById('reg-name').value.trim();
+  const nameInput = document.getElementById('reg-name');
   const emailInput = document.getElementById('reg-email');
+  const passwordInput = document.getElementById('reg-password');
+  const password = passwordInput ? passwordInput.value : '';
+  const confirmPassword = document.getElementById('reg-confirm-password')?.value || password;
   const personalEmail = emailInput ? emailInput.value.trim().toLowerCase() : '';
-  const branch = document.getElementById('reg-branch') ? document.getElementById('reg-branch').value.trim() : '';
-  const section = document.getElementById('reg-section') ? document.getElementById('reg-section').value.trim() : '';
-  const batch = document.getElementById('reg-batch') ? document.getElementById('reg-batch').value.trim() : 'BATCH - 1';
-  const rollInput = document.getElementById('reg-roll');
-  const roll = rollInput ? rollInput.value.trim() : '';
-  const mobileInput = document.getElementById('reg-mobile');
-  const mobileEntered = mobileInput ? mobileInput.value.trim().replace(/[^0-9]/g, '') : '';
-  const password = document.getElementById('reg-password').value;
-  const confirmPassword = document.getElementById('reg-confirm-password') ? document.getElementById('reg-confirm-password').value : password;
 
-  if (!name || !personalEmail || !branch || !password) {
-    return showRegError('Please fill in all required fields (Full Name, Personal Email ID, Branch, and Password).');
-  }
-
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  if (!emailRegex.test(personalEmail)) {
-    return showRegError('Please enter a valid personal email address.');
-  }
-
-  if (password.length < 6) {
-    return showRegError('Password must be at least 6 characters long.');
-  }
-
-  if (confirmPassword && password !== confirmPassword) {
-    return showRegError('Passwords do not match. Please verify your password.');
-  }
+  if (!personalEmail || !password) return showRegError('Enter your college email address and password.');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(personalEmail)) return showRegError('Enter a valid email address.');
+  if (password.length < 6) return showRegError('Password must be at least 6 characters long.');
+  if (password !== confirmPassword) return showRegError('Passwords do not match.');
 
   setLoading('reg-btn', true);
+  let cred = null;
   try {
-    let academicData = verifiedRosterData || findStudentInRoster(personalEmail) || (mobileEntered ? findStudentByMobile(mobileEntered) : null);
+    const verify = firebase.functions().httpsCallable('verifyStudentRegistration');
+    const verification = await verify({ email: personalEmail });
+    const academicData = verification.data && verification.data.student;
+    if (!academicData) throw new Error('Your email was not found in the verified college roster.');
 
-    // 1. Create account in Firebase Authentication using personal email
-    const cred = await auth.createUserWithEmailAndPassword(personalEmail, password);
-    
-    if (cred.user && cred.user.updateProfile) {
-      try {
-        await cred.user.updateProfile({ displayName: academicData?.name || name });
-      } catch (_) {}
+    // Restore the verified roster values so the form cannot present a different batch.
+    for (const [id, value] of Object.entries({
+      'reg-name': academicData.name,
+      'reg-branch': academicData.branch,
+      'reg-section': academicData.section,
+      'reg-batch': academicData.batch,
+      'reg-roll': academicData.rollNumber
+    })) {
+      const input = document.getElementById(id);
+      if (input && value) input.value = value;
     }
+    verifiedRosterData = { ...academicData, email: personalEmail };
 
-    // 2. Best-effort verification email link
-    try {
-      await cred.user.sendEmailVerification();
-    } catch (verifErr) {
-      console.warn('Could not send verification email:', verifErr);
-    }
-
-    // 3. Build student profile: using roster data if enrolled, or user-entered details if new student!
-    const rollNumber = academicData?.rollNumber || roll || '';
-    const studentMobile = academicData?.mobile || mobileEntered || '';
-    const studentData = {
-      name: academicData?.name || name,
-      college: academicData?.college || 'AVN',
-      branch: academicData?.branch || branch,
-      section: academicData?.section || section || 'No Section',
-      rollNumber: rollNumber,
-      studentId: rollNumber,
-      mobile: studentMobile,
+    cred = await auth.createUserWithEmailAndPassword(personalEmail, password);
+    await db.collection('users').doc(cred.user.uid).set({
       email: personalEmail,
-      personalEmail: personalEmail,
       role: 'student',
-      batch: academicData?.batch || batch || 'BATCH - 1',
-      status: 'active',
-      isNewRegistration: !academicData,
-      createdAt: firebase.firestore.FieldValue.serverTimestamp()
-    };
+      status: 'pending'
+    });
 
-    // Save profile to Firestore users collection
-    try {
-      await db.collection('users').doc(cred.user.uid).set(studentData);
-    } catch (fsErr) {
-      console.warn('Firestore user doc write warning:', fsErr);
+    const complete = firebase.functions().httpsCallable('completeStudentRegistration');
+    const completion = await complete({});
+    const studentData = completion.data && completion.data.student;
+    if (!studentData || studentData.status !== 'active') {
+      throw new Error('Your account was created but could not be activated. Sign in again or contact your administrator.');
     }
 
-    // If new student not originally in sheet, add them to student_roster so admin can track them
-    if (!academicData) {
-      try {
-        await db.collection('settings').doc('student_roster').set({
-          students: firebase.firestore.FieldValue.arrayUnion({
-            name: studentData.name,
-            email: personalEmail,
-            mobile: studentMobile,
-            branch: studentData.branch,
-            section: studentData.section,
-            batch: studentData.batch,
-            rollNumber: rollNumber,
-            college: 'AVN',
-            status: 'verified',
-            sourceSheet: 'Self-Registered'
-          })
-        }, { merge: true });
-        
-        if (typeof window !== 'undefined' && window.ATTENDX_ROSTER && Array.isArray(window.ATTENDX_ROSTER.students)) {
-          window.ATTENDX_ROSTER.students.push({
-            name: studentData.name,
-            email: personalEmail,
-            mobile: studentMobile,
-            branch: studentData.branch,
-            section: studentData.section,
-            batch: studentData.batch,
-            rollNumber: rollNumber,
-            college: 'AVN',
-            status: 'verified',
-            sourceSheet: 'Self-Registered'
-          });
-        }
-      } catch (rosterAddErr) {
-        console.warn('Could not auto-add to roster collection:', rosterAddErr);
-      }
+    try { await cred.user.updateProfile({ displayName: studentData.name || 'Student' }); } catch (_) {}
+    try { await cred.user.sendEmailVerification(); } catch (error) {
+      console.warn('Could not send verification email:', error);
     }
-
-    // Store student profile locally for fast access
     localStorage.setItem(`user_profile_${cred.user.uid}`, JSON.stringify(studentData));
-    try {
-      const regList = JSON.parse(localStorage.getItem('attendx_registered_students') || '[]');
-      regList.push({
-        name: studentData.name,
-        email: personalEmail,
-        mobile: studentMobile,
-        branch: studentData.branch,
-        section: studentData.section,
-        batch: studentData.batch,
-        rollNumber: rollNumber
-      });
-      localStorage.setItem('attendx_registered_students', JSON.stringify(regList));
-    } catch (_) {}
-
     closeStudentRegister();
     showToast('Account created successfully! Welcome to AttendX.', 'success');
-
-    // Auto-redirect to student portal
     window.location.href = 'student.html';
-  } catch (e) {
-    console.error('Registration failed:', e);
-    showRegError(getFriendlyRegError(e.code, e));
+  } catch (error) {
+    console.error('Registration failed:', error);
+    showRegError(getFriendlyRegError(error.code, error));
   } finally {
     setLoading('reg-btn', false);
   }
-}
-
-// ---- Open & Close Trainer Registration Modal ----
+}// ---- Open & Close Trainer Registration Modal ----
 function openTrainerRegister() {
   const modal = document.getElementById('trainer-register-modal');
   if (modal) {
@@ -998,4 +694,7 @@ function togglePasswordVisibility(inputId, btn) {
     btn.setAttribute('title', isPassword ? 'Hide password' : 'Show password');
   }
 }
+
+
+
 

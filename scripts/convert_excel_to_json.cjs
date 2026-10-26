@@ -2,7 +2,7 @@
  * AttendX - Convert Excel Database (AVN 2029 DATA BASE.xlsx) to JSON
  * Generates:
  * 1. data/roster.json
- * 2. js/roster-data.js (for direct client-side lookup without Cloud Functions)
+ * 2. private-data/roster.json (local only; never sent to browsers)
  */
 
 const fs = require('fs');
@@ -256,21 +256,8 @@ function buildRoster() {
 }
 
 const payload = buildRoster();
+const privateDir = path.join(rootDir, 'private-data');
+if (!fs.existsSync(privateDir)) fs.mkdirSync(privateDir, { recursive: true });
+fs.writeFileSync(path.join(privateDir, 'roster.json'), JSON.stringify(payload, null, 2), 'utf8');
+console.log('Wrote private local roster data.');
 
-// 1. Write data/roster.json
-const dataDir = path.join(rootDir, 'data');
-if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-const jsonPath = path.join(dataDir, 'roster.json');
-fs.writeFileSync(jsonPath, JSON.stringify(payload, null, 2), 'utf8');
-console.log(`✓ Wrote JSON roster (${payload.students.length} students) to: ${jsonPath}`);
-
-// 2. Write js/roster-data.js (for direct client script tag)
-const jsPath = path.join(rootDir, 'js', 'roster-data.js');
-const jsContent = `/**
- * AttendX Student Master Roster (Converted from AVN 2029 DATA BASE.xlsx)
- * Enables instant, client-side validation on Firebase Spark (free) plan without Cloud Functions.
- */
-window.ATTENDX_ROSTER = ${JSON.stringify(payload)};
-`;
-fs.writeFileSync(jsPath, jsContent, 'utf8');
-console.log(`✓ Wrote client-side roster script to: ${jsPath}`);

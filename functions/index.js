@@ -42,7 +42,7 @@ exports.markAttendance = functions.https.onCall(async (data, context) => {
   }
 
   const studentProfile = userDoc.data();
-  if (studentProfile.status && studentProfile.status !== 'verified' && studentProfile.status !== 'active') {
+  if (studentProfile.status !== 'active') {
     throw new functions.https.HttpsError(
       'permission-denied',
       'Your student account is pending administrator review. Attendance cannot be recorded.'
@@ -327,3 +327,69 @@ exports.verifyStudentRegistration = functions.https.onCall(async (data, context)
     }
   };
 });
+
+
+
+/**
+ * Completes a newly authenticated student's registration from the private roster.
+ * The client can create only a pending stub; this function supplies trusted fields.
+ */
+exports.completeStudentRegistration = functions.https.onCall(async (data, context) => {
+  if (!context.auth || !context.auth.uid || !context.auth.token.email) {
+    throw new functions.https.HttpsError('unauthenticated', 'Sign in with your student email to finish registration.');
+  }
+
+  const uid = context.auth.uid;
+  const email = String(context.auth.token.email).trim().toLowerCase();
+  const userRef = db.collection('users').doc(uid);
+  const userSnap = await userRef.get();
+
+  if (userSnap.exists && userSnap.data().status === 'active' && userSnap.data().role === 'student') {
+    const active = userSnap.data();
+    return { success: true, student: {
+      name: active.name || '', college: active.college || '', branch: active.branch || '',
+      section: active.section || '', rollNumber: active.rollNumber || '',
+      studentId: active.studentId || '', mobile: active.mobile || '', email,
+      personalEmail: email, role: 'student', batch: active.batch || '', status: 'active'
+    } };
+  }
+  if (!userSnap.exists || userSnap.data().role !== 'student' || userSnap.data().status !== 'pending' || String(userSnap.data().email || '').trim().toLowerCase() !== email) {
+    throw new functions.https.HttpsError('permission-denied', 'Student registration is not pending.');
+  }
+
+  const rosterSnap = await db.collection('settings').doc('student_roster').get();
+  const students = rosterSnap.exists && Array.isArray(rosterSnap.data().students)
+    ? rosterSnap.data().students
+    : [];
+  const matches = students.filter(student =>
+    String(student.email || '').trim().toLowerCase() === email
+    && student.status === 'verified'
+    && student.batch
+  );
+  if (matches.length !== 1) {
+    throw new functions.https.HttpsError('failed-precondition', 'Your email must match one verified roster entry. Contact your administrator if you need help.');
+  }
+
+  const rosterStudent = matches[0];
+  const profile = {
+    name: String(rosterStudent.name || 'Student'),
+    college: String(rosterStudent.college || 'AVN'),
+    branch: String(rosterStudent.branch || ''),
+    section: String(rosterStudent.section || ''),
+    rollNumber: String(rosterStudent.rollNumber || ''),
+    studentId: String(rosterStudent.rollNumber || ''),
+    mobile: String(rosterStudent.mobile || ''),
+    email,
+    personalEmail: email,
+    role: 'student',
+    batch: String(rosterStudent.batch),
+    status: 'active',
+  };
+
+  await userRef.set({ ...profile, createdAt: userSnap.data().createdAt || admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+  return { success: true, student: profile };
+});
+
+
+
+

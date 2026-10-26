@@ -235,11 +235,7 @@ async function startSession() {
       endTime: firebase.firestore.Timestamp.fromDate(sessionEndTime)
     };
 
-    try {
-      await sessionDocRef.set(sessionPayload);
-    } catch (fsErr) {
-      console.warn('Session Firestore save restricted by security rules (continuing in local mode):', fsErr);
-    }
+    await sessionDocRef.set(sessionPayload);
 
     currentSession = {
       id: sessionDocRef.id,
@@ -2127,94 +2123,6 @@ function toggleGoogleSheetSection() {
   }
 }
 
-function toggleSheetCollapse() {
-  const wrapper = document.getElementById('google-sheet-iframe-wrapper');
-  const icon = document.getElementById('sheet-collapse-icon');
-  if (!wrapper) return;
-  if (wrapper.style.display === 'none') {
-    wrapper.style.display = 'block';
-    if (icon) icon.innerHTML = '<polyline points="18 15 12 9 6 15"/>';
-  } else {
-    wrapper.style.display = 'none';
-    if (icon) icon.innerHTML = '<polyline points="6 9 12 15 18 9"/>';
-  }
-}
-
-function toggleSheetFullscreen() {
-  const wrapper = document.getElementById('google-sheet-iframe-wrapper');
-  if (!wrapper) return;
-  if (wrapper.style.height === '85vh') {
-    wrapper.style.height = '580px';
-  } else {
-    wrapper.style.height = '85vh';
-  }
-}
-
-// Live direct sync from published Google Sheets into Firestore & in-memory tables
 async function syncFromGoogleSheetNow() {
-  const btn = document.getElementById('sync-gsheet-btn');
-  const txt = document.getElementById('sync-gsheet-text');
-  if (btn) btn.disabled = true;
-  if (txt) txt.textContent = 'Syncing Google Sheets...';
-
-  const gids = [
-    { name: 'BATCH - 1', gid: '1211978703' },
-    { name: 'BATCH - 2', gid: '1590374431' },
-    { name: 'BATCH - 3', gid: '79810499' },
-    { name: 'Form Responses 1', gid: '334830017' }
-  ];
-
-  try {
-    let allParsed = [];
-    const batchCounts = {};
-
-    for (const g of gids) {
-      const url = `https://docs.google.com/spreadsheets/d/e/2PACX-1vQ0mIp2vQA4_06cXDCiCcE0WQfOSL_xjmdIE5a04prnhe2_lAHJU72E4PMyp6yQKMltyGwIhNazGRWy/pub?gid=${g.gid}&single=true&output=csv`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`Could not fetch ${g.name} (${res.status})`);
-      const csvText = await res.text();
-      let rows = [];
-      if (typeof XLSX !== 'undefined') {
-        const wb = XLSX.read(csvText, { type: 'string' });
-        rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' });
-      } else {
-        rows = parseTableData(csvText);
-      }
-      const parsed = extractStudentsFromRows(rows, g.name);
-      batchCounts[g.name] = parsed.length;
-      allParsed = allParsed.concat(parsed);
-    }
-
-    if (!allParsed.length) throw new Error('No student records retrieved from Google Sheets');
-
-    // Filter valid emails & sanitize
-    const validRecords = allParsed.filter(s => isValidEmail(s.email));
-    const uniqueStudents = sanitizeRoster(validRecords);
-
-    // Update in Firestore
-    await db.collection('settings').doc('student_roster').set({
-      students: uniqueStudents,
-      count: uniqueStudents.length,
-      lastSyncedAt: new Date().toISOString(),
-      source: 'Google Sheets Live Embed Sync'
-    }, { merge: true });
-
-    // Update in-memory roster
-    masterRoster = uniqueStudents;
-    if (typeof window !== 'undefined') {
-      if (!window.ATTENDX_ROSTER) window.ATTENDX_ROSTER = {};
-      window.ATTENDX_ROSTER.students = uniqueStudents;
-    }
-
-    updateRosterSummaryUI();
-    renderRosterPreview(masterRoster);
-
-    showToast(`✓ Successfully synced ${uniqueStudents.length} students live from Google Sheets!`, 'success');
-  } catch (err) {
-    console.error('Google Sheets sync error:', err);
-    showToast('Failed to sync Google Sheets: ' + err.message, 'error');
-  } finally {
-    if (btn) btn.disabled = false;
-    if (txt) txt.textContent = 'Sync Live Sheet to Database';
-  }
+  showToast('Upload a roster CSV through the secured admin roster panel.', 'info');
 }

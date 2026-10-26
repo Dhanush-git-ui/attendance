@@ -374,21 +374,11 @@ async function performInwardSync(excelFile) {
   try {
     const payload = parseWorkbook(excelFile);
 
-    // 1. Write data/roster.json
-    const dataDir = path.join(rootDir, 'data');
-    if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-    fs.writeFileSync(path.join(dataDir, 'roster.json'), JSON.stringify(payload, null, 2), 'utf8');
-
-    // 2. Write js/roster-data.js
-    const jsContent = `/**
- * AttendX Student Master Roster (Synced from ${path.basename(excelFile)} at ${new Date().toISOString()})
- */
-window.ATTENDX_ROSTER = ${JSON.stringify(payload)};
-`;
-    fs.writeFileSync(path.join(rootDir, 'js', 'roster-data.js'), jsContent, 'utf8');
-
-    console.log(`  ✓ Updated data/roster.json (${payload.students.length} students)`);
-    console.log(`  ✓ Updated js/roster-data.js (Browser runtime bundle)`);
+    // Keep the local roster outside all public web outputs.
+    const privateDir = path.join(rootDir, 'private-data');
+    if (!fs.existsSync(privateDir)) fs.mkdirSync(privateDir, { recursive: true });
+    fs.writeFileSync(path.join(privateDir, 'roster.json'), JSON.stringify(payload, null, 2), 'utf8');
+    console.log('  ✓ Updated private local roster data');
 
     // 3. Sync to Cloud Firestore settings/student_roster
     const db = getFirestore();
@@ -795,3 +785,5 @@ if (process.argv.includes('--once')) {
 } else {
   startWatcher();
 }
+
+

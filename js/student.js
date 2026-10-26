@@ -24,6 +24,11 @@ auth.onAuthStateChanged(async (user) => {
           return;
         }
         profileData = doc.data();
+        if (profileData.role === 'student' && profileData.status === 'pending') {
+          const complete = firebase.functions().httpsCallable('completeStudentRegistration');
+          const result = await complete({});
+          if (result.data && result.data.student) profileData = result.data.student;
+        }
       }
     } catch (fsErr) {
       console.warn('Firestore user lookup restricted by security rules (using local profile):', fsErr);
@@ -102,6 +107,7 @@ function populateStudentInfo() {
 
   // Batch badge
   const batchBadge = document.getElementById('student-batch-badge');
+  const editBatchBtn = document.getElementById('edit-batch-btn');
   if (batchBadge) {
     if (currentUser.batch) {
       batchBadge.textContent = currentUser.batch;
@@ -109,6 +115,9 @@ function populateStudentInfo() {
     } else {
       batchBadge.style.display = 'none';
     }
+  }
+  if (editBatchBtn) {
+    editBatchBtn.style.display = 'none';
   }
 
   // College info (default to AVN from database)
@@ -142,8 +151,28 @@ async function startScanner() {
     document.getElementById('scan-btn').className = 'btn btn-danger btn-full';
     showStatus('Camera active — point at QR code', 'info');
   } catch (e) {
-    console.error(e);
-    showStatus('Could not access camera. Please allow camera permission.', 'error');
+    console.error('Camera startup failed:', e);
+    scanning = false;
+    if (html5QrCode) {
+      try {
+        if (html5QrCode.isScanning) await html5QrCode.stop();
+      } catch (_) {}
+      try { await html5QrCode.clear(); } catch (_) {}
+      html5QrCode = null;
+    }
+
+    let message = 'Camera could not start. Check your browser camera permission and try again.';
+    if (typeof Html5Qrcode === 'undefined') message = 'The QR scanner did not load. Refresh the page and try again.';
+    if (!window.isSecureContext) {
+      message = 'Camera access requires a secure HTTPS page. Open the site using its HTTPS address.';
+    } else if (e && (e.name === 'NotAllowedError' || /permission|denied/i.test(e.message || ''))) {
+      message = 'Camera permission was denied. Allow camera access for this site in your browser settings, then try again.';
+    } else if (e && e.name === 'NotFoundError') {
+      message = 'No camera was found on this device.';
+    } else if (e && e.name === 'NotReadableError') {
+      message = 'The camera is already in use by another app. Close it and try again.';
+    }
+    showStatus(message, 'error');
   }
 }
 
@@ -163,122 +192,39 @@ async function onScanSuccess(rawValue) {
   if (processing) return;
   processing = true;
 
-  let payload;
   try {
-    payload = JSON.parse(rawValue);
-  } catch {
-    showStatus('Invalid QR code. Please scan the classroom QR.', 'error');
-    processing = false;
-    return;
-  }
-
-  const { sessionId, token } = payload;
-  if (!sessionId || !token) {
-    showStatus('Invalid QR format.', 'error');
-    processing = false;
-    return;
-  }
-
-  await stopScanner();
-  showStatus('Verifying attendance with server...', 'info');
-
-  try {
-    let successRecorded = false;
-
-    // 1. If Cloud Functions are available (e.g. Blaze plan), try callable function
-    if (typeof firebase !== 'undefined' && firebase.functions) {
-      try {
-        const markAttendanceFn = firebase.functions().httpsCallable('markAttendance');
-        const res = await markAttendanceFn({ sessionId, token });
-        const data = res.data || {};
-        showStatus(`Attendance marked for "${data.className || 'Class'}" — ${data.subject || 'Session'}`, 'success');
-        showToast('Attendance recorded!', 'success');
-        successRecorded = true;
-      } catch (fnErr) {
-        // If functions are not deployed on Spark plan, fall back to direct Firestore verification
-        console.warn('Callable function unavailable on Spark plan, falling back to direct Firestore verification:', fnErr.message);
-      }
+    let payload;
+    try {
+      payload = JSON.parse(rawValue);
+    } catch (_) {
+      showStatus('Invalid QR code. Please scan the classroom QR.', 'error');
+      return;
     }
 
-    // 2. Direct Firestore verification fallback for Firebase Spark (free) plan
-    if (!successRecorded) {
-      const sessionDoc = await db.collection('sessions').doc(sessionId).get();
-      if (!sessionDoc.exists) {
-        throw new Error('Session not found or has expired.');
-      }
-      const session = sessionDoc.data();
-      if (session.status !== 'active') {
-        throw new Error('This attendance session has already ended.');
-      }
-
-      // Check session expiry duration
-      const nowMs = Date.now();
-      let sessionEndMs = null;
-      if (session.endTime) {
-        if (typeof session.endTime.toMillis === 'function') sessionEndMs = session.endTime.toMillis();
-        else if (session.endTime._seconds) sessionEndMs = session.endTime._seconds * 1000;
-        else sessionEndMs = new Date(session.endTime).getTime();
-      }
-      if (sessionEndMs && nowMs > sessionEndMs + 60000) {
-        throw new Error('Session duration has expired. Attendance closed.');
-      }
-
-      // Rotating token match
-      const isCurrent = session.currentToken === token;
-      const isPrevious = Boolean(session.previousToken && session.previousToken === token);
-      if (!isCurrent && !isPrevious) {
-        throw new Error('QR code has expired. Please scan the current code on screen.');
-      }
-
-      // Prevent duplicate attendance for the same session
-      const recordRef = db.collection('attendance').doc(sessionId).collection('records').doc(currentUser.uid);
-      const existing = await recordRef.get();
-      if (existing.exists) {
-        throw new Error('Attendance has already been recorded for this session.');
-      }
-
-      // Fetch student profile details
-      let prof = currentUser || {};
-      if (!prof.name) {
-        try {
-          const uDoc = await db.collection('users').doc(currentUser.uid).get();
-          if (uDoc.exists) prof = { ...prof, ...uDoc.data() };
-        } catch (_) {}
-      }
-
-      const roll = prof.rollNumber || prof.studentId || '';
-      const attendanceRecord = {
-        uid: currentUser.uid,
-        rollNumber: roll,
-        studentId: roll,
-        name: prof.name || currentUser.displayName || 'Student',
-        branch: prof.branch || '',
-        college: (prof.college && prof.college !== 'HITAM') ? prof.college : 'AVN',
-        section: prof.section || '',
-        batch: prof.batch || '',
-        sessionId: sessionId,
-        className: session.className || '',
-        subject: session.subject || '',
-        status: 'present',
-        markedAt: firebase.firestore.FieldValue.serverTimestamp()
-      };
-
-      await recordRef.set(attendanceRecord);
-      showStatus(`Attendance marked for "${session.className || 'Class'}" — ${session.subject || 'Session'}`, 'success');
-      showToast('Attendance recorded!', 'success');
+    const sessionId = payload && payload.sessionId;
+    const token = payload && payload.token;
+    if (!sessionId || !token) {
+      showStatus('Invalid QR format.', 'error');
+      return;
     }
 
-    loadHistory();
-  } catch (e) {
-    console.error('Attendance verification error:', e);
-    const msg = e.message || 'Failed to mark attendance. Please scan current code.';
-    showStatus(msg, 'error');
-    showToast(msg, 'error');
+    await stopScanner();
+    showStatus('Verifying attendance with server...', 'info');
+    const markAttendance = firebase.functions().httpsCallable('markAttendance');
+    const result = await markAttendance({ sessionId, token });
+    const data = result.data || {};
+    showStatus('Attendance marked for "' + (data.className || 'Class') + '" — ' + (data.subject || 'Session'), 'success');
+    showToast('Attendance recorded!', 'success');
+    await loadHistory();
+  } catch (error) {
+    console.error('Attendance verification error:', error);
+    const message = error.message || 'Failed to mark attendance. Please scan the current code.';
+    showStatus(message, 'error');
+    showToast(message, 'error');
+  } finally {
+    processing = false;
   }
-
-  processing = false;
 }
-
 function onScanError() {
   // Suppress continuous scan errors silently
 }
@@ -367,3 +313,75 @@ function logout() {
     window.location.href = 'index.html';
   }
 }
+
+// ---- Academic Batch Change Functions ----
+function openEditBatchModal() {
+  const modal = document.getElementById('edit-batch-modal');
+  const sel = document.getElementById('change-batch-select');
+  if (sel && currentUser && currentUser.batch) {
+    sel.value = currentUser.batch;
+  }
+  if (modal) modal.style.display = 'flex';
+}
+
+function closeEditBatchModal() {
+  const modal = document.getElementById('edit-batch-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+async function saveStudentBatch() {
+  const sel = document.getElementById('change-batch-select');
+  if (!sel || !currentUser || !currentUser.uid) return;
+  const newBatch = sel.value;
+  if (!newBatch) return;
+
+  const btn = document.getElementById('save-batch-btn');
+  if (btn) btn.disabled = true;
+
+  try {
+    currentUser.batch = newBatch;
+    await db.collection('users').doc(currentUser.uid).update({ batch: newBatch });
+    localStorage.setItem(`user_profile_${currentUser.uid}`, JSON.stringify(currentUser));
+
+    // Also update in settings/student_roster if enrolled
+    try {
+      const rosterDoc = await db.collection('settings').doc('student_roster').get();
+      if (rosterDoc.exists) {
+        const students = rosterDoc.data().students || [];
+        const studentEmail = currentUser.email || currentUser.personalEmail;
+        const studentMobile = currentUser.mobile;
+        const idx = students.findIndex(s => 
+          (studentEmail && s.email && s.email.toLowerCase() === studentEmail.toLowerCase()) ||
+          (studentMobile && s.mobile && s.mobile.replace(/[^0-9]/g, '') === String(studentMobile).replace(/[^0-9]/g, ''))
+        );
+        if (idx !== -1) {
+          students[idx].batch = newBatch;
+          await db.collection('settings').doc('student_roster').set({ students }, { merge: true });
+        }
+      }
+    } catch (rErr) {
+      console.warn('Could not update roster batch:', rErr);
+    }
+
+    if (typeof window !== 'undefined' && window.ATTENDX_ROSTER && Array.isArray(window.ATTENDX_ROSTER.students)) {
+      const liveIdx = window.ATTENDX_ROSTER.students.findIndex(s => 
+        (currentUser.email && s.email && s.email.toLowerCase() === currentUser.email.toLowerCase()) ||
+        (currentUser.mobile && s.mobile && s.mobile.replace(/[^0-9]/g, '') === String(currentUser.mobile).replace(/[^0-9]/g, ''))
+      );
+      if (liveIdx !== -1) {
+        window.ATTENDX_ROSTER.students[liveIdx].batch = newBatch;
+      }
+    }
+
+    populateStudentInfo();
+    closeEditBatchModal();
+    showToast(`Batch updated to ${newBatch}!`, 'success');
+  } catch (err) {
+    console.error('Failed to update batch:', err);
+    showToast('Failed to update batch: ' + (err.message || 'Please try again'), 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+

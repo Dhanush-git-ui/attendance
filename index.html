@@ -572,12 +572,12 @@
     <div id="student-form-section" class="form-section active">
       <form onsubmit="event.preventDefault(); loginStudent();">
         <div class="form-group">
-          <label for="student-identifier">Full Name, Phone Number, or Email</label>
+          <label for="student-identifier">Email Address</label>
           <div class="input-field-wrap">
             <span class="field-icon">
               <svg class="icon-svg" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
             </span>
-            <input type="text" id="student-identifier" name="student-identifier" placeholder="e.g. 9876543210, Full Name, or your email" autocomplete="username" autofocus />
+            <input type="email" id="student-identifier" name="student-identifier" placeholder="yourname@example.com" autocomplete="email" autofocus />
           </div>
         </div>
 
@@ -737,7 +737,7 @@
               <circle cx="12" cy="7" r="4"/>
             </svg>
           </div>
-          <input type="text" id="reg-name" placeholder="e.g. Alex Johnson" required autocomplete="name" />
+          <input type="text" id="reg-name" placeholder="e.g. Alex Johnson" required autocomplete="name" oninput="this.dataset.autofilled='false'" />
         </div>
       </div>
 
@@ -768,7 +768,7 @@
                 <polyline points="2 12 12 17 22 12"/>
               </svg>
             </div>
-            <input type="text" id="reg-branch" placeholder="e.g. Computer Science" required autocomplete="off" />
+            <input type="text" id="reg-branch" placeholder="e.g. Computer Science" required autocomplete="off" oninput="this.dataset.autofilled='false'" />
           </div>
         </div>
 
@@ -783,7 +783,7 @@
                 <line x1="9" y1="17" x2="13" y2="17"/>
               </svg>
             </div>
-            <input type="text" id="reg-section" placeholder="e.g. A or Sec-1" required autocomplete="off" />
+            <input type="text" id="reg-section" placeholder="e.g. A or Sec-1" required autocomplete="off" oninput="this.dataset.autofilled='false'" />
           </div>
         </div>
       </div>
@@ -801,7 +801,7 @@
                 <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
               </svg>
             </div>
-            <select id="reg-batch" required style="width:100%;height:46px;padding:0.6rem 0.75rem 0.6rem 2.6rem;border:1px solid #cbd5e1;border-radius:8px;font-size:0.92rem;background:#fff;color:#1e293b">
+            <select id="reg-batch" required style="width:100%;height:46px;padding:0.6rem 0.75rem 0.6rem 2.6rem;border:1px solid #cbd5e1;border-radius:8px;font-size:0.92rem;background:#fff;color:#1e293b" onchange="this.dataset.autofilled='false'">
               <option value="">Select Batch</option>
               <option value="BATCH - 1">BATCH - 1</option>
               <option value="BATCH - 2">BATCH - 2</option>
@@ -1010,7 +1010,11 @@
 <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-functions-compat.js"></script>
 <script src="js/firebase-config.js?v=3"></script>
-<script src="js/roster-data.js?v=4"></script>
-<script src="js/auth.js?v=3"></script>
+
+<script src="js/auth.js?v=4"></script>
 </body>
 </html>
+
+
+
+

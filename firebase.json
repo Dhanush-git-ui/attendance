@@ -9,6 +9,9 @@
       "scripts/**",
       "tests/**",
       "backups/**",
+      "private-data/**",
+      "data/**",
+      "js/roster-data.js",
       "*.xlsx",
       "*.log",
       "firestore-debug.log"
@@ -18,19 +21,10 @@
     "rules": "firestore.rules",
     "indexes": "firestore.indexes.json"
   },
-  "functions": {
-    "source": "functions"
-  },
+  "functions": { "source": "functions" },
   "emulators": {
-    "firestore": {
-      "port": 8080
-    },
-    "functions": {
-      "port": 5001
-    },
-    "ui": {
-      "enabled": false
-    }
+    "firestore": { "port": 8080 },
+    "functions": { "port": 5001 },
+    "ui": { "enabled": false }
   }
 }
-
