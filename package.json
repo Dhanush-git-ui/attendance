@@ -6,7 +6,9 @@
     "start": "npx serve .",
     "test": "node tests/verify_registration_and_review.cjs && node tests/verify_mark_attendance.cjs",
     "test:registration": "node tests/verify_registration_and_review.cjs",
-    "test:attendance": "node tests/verify_mark_attendance.cjs"
+    "test:attendance": "node tests/verify_mark_attendance.cjs",
+    "sync:excel": "node scripts/watch_and_sync_excel.cjs --once",
+    "watch:excel": "node scripts/watch_and_sync_excel.cjs"
   },
   "dependencies": {
     "firebase": "^12.19.0"
