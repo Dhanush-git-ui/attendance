@@ -287,8 +287,11 @@ async function onScanSuccess(rawValue) {
       }
 
       const roll = prof.rollNumber || prof.studentId || '';
+      const email = prof.email || prof.personalEmail || currentUser.email || '';
       const attendanceRecord = {
         uid: currentUser.uid,
+        email: email,
+        personalEmail: email,
         rollNumber: roll,
         studentId: roll,
         name: prof.name || currentUser.displayName || 'Student',

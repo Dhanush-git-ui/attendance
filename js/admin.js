@@ -191,6 +191,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (dateInput) dateInput.value = new Date().toISOString().slice(0, 10);
   loadMasterRoster();
   loadDailySheet();
+  loadPastSessions();
 });
 
 function dailySheetSessionId(date, batch, branch, section) {
@@ -2146,6 +2147,7 @@ async function endSession() {
   sessionDocRef  = null;
 
   showToast('Session ended. Attendance and absentees finalized.', 'success');
+  loadPastSessions();
 }
 
 // ---- Fullscreen QR ----
@@ -2214,4 +2216,456 @@ function toggleGoogleSheetSection() {
 
 async function syncFromGoogleSheetNow() {
   showToast('Upload a roster CSV through the secured admin roster panel.', 'info');
+}
+
+
+// =============================================
+// PAST ATTENDANCE SESSIONS (DAY-WISE & BATCH-WISE)
+// =============================================
+var cachedPastSessionsList = [];
+var currentSelectedSessionData = null;
+
+async function loadPastSessions() {
+  const container = document.getElementById('past-sessions-list');
+  if (!container) return;
+  container.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--text-muted)"><span class="spinner"></span> Loading past sessions from database...</div>';
+
+  const batchFilter = document.getElementById('past-filter-batch')?.value || 'ALL';
+  const dateFilter = document.getElementById('past-filter-date')?.value || '';
+
+  try {
+    const snap = await db.collection('sessions').orderBy('startTime', 'desc').limit(100).get();
+    if (snap.empty) {
+      container.innerHTML = '<div style="text-align:center;padding:2.5rem 1rem;color:var(--text-muted);background:#fff;border-radius:8px"><p style="font-size:0.95rem;font-weight:500">No attendance sessions found in the database yet.</p><p style="font-size:0.85rem">Start a QR attendance session above to record attendance.</p></div>';
+      return;
+    }
+
+    let sessions = [];
+    snap.forEach(doc => {
+      const data = { id: doc.id, ...doc.data() };
+      let dateStr = data.date || '';
+      if (!dateStr && data.startTime?.toDate) {
+        dateStr = data.startTime.toDate().toISOString().slice(0, 10);
+      }
+      data.computedDate = dateStr;
+      sessions.push(data);
+    });
+
+    cachedPastSessionsList = sessions;
+    renderFilteredPastSessions();
+  } catch (err) {
+    console.error('Error loading past sessions:', err);
+    try {
+      const snapFallback = await db.collection('sessions').limit(100).get();
+      let sessions = [];
+      snapFallback.forEach(doc => {
+        const data = { id: doc.id, ...doc.data() };
+        let dateStr = data.date || '';
+        if (!dateStr && data.startTime?.toDate) {
+          dateStr = data.startTime.toDate().toISOString().slice(0, 10);
+        }
+        data.computedDate = dateStr;
+        sessions.push(data);
+      });
+      sessions.sort((a, b) => {
+        const tA = a.startTime?.toDate ? a.startTime.toDate().getTime() : 0;
+        const tB = b.startTime?.toDate ? b.startTime.toDate().getTime() : 0;
+        return tB - tA;
+      });
+      cachedPastSessionsList = sessions;
+      renderFilteredPastSessions();
+    } catch (fallbackErr) {
+      container.innerHTML = '<div style="text-align:center;padding:2rem;color:#ef4444">Could not load past sessions: ' + escapeHtml(err.message) + '</div>';
+    }
+  }
+}
+
+function renderFilteredPastSessions() {
+  const container = document.getElementById('past-sessions-list');
+  if (!container) return;
+
+  const batchFilter = document.getElementById('past-filter-batch')?.value || 'ALL';
+  const dateFilter = document.getElementById('past-filter-date')?.value || '';
+  const searchFilter = (document.getElementById('past-filter-search')?.value || '').trim().toLowerCase();
+
+  let filtered = [...cachedPastSessionsList];
+
+  if (batchFilter !== 'ALL') {
+    filtered = filtered.filter(s => (s.batch || '').trim().toUpperCase() === batchFilter.trim().toUpperCase());
+  }
+
+  if (dateFilter) {
+    filtered = filtered.filter(s => s.computedDate === dateFilter);
+  }
+
+  if (searchFilter) {
+    filtered = filtered.filter(s => {
+      const className = String(s.className || '').toLowerCase();
+      const subject = String(s.subject || '').toLowerCase();
+      const batch = String(s.batch || '').toLowerCase();
+      return className.includes(searchFilter) || subject.includes(searchFilter) || batch.includes(searchFilter);
+    });
+  }
+
+  if (filtered.length === 0) {
+    container.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--text-muted);background:#fff;border-radius:8px">No attendance sessions match the selected batch, date, or search filters.</div>';
+    return;
+  }
+
+  container.innerHTML = `
+    <div style="overflow-x:auto;background:#fff;border-radius:8px;border:1px solid var(--border)">
+      <table style="width:100%;border-collapse:collapse;min-width:760px">
+        <thead>
+          <tr style="background:#f8fafc;border-bottom:2px solid var(--border);text-align:left;font-size:0.8rem;color:var(--text-muted)">
+            <th style="padding:0.75rem 1rem">Date & Time</th>
+            <th style="padding:0.75rem 1rem">Class / Course</th>
+            <th style="padding:0.75rem 1rem">Subject</th>
+            <th style="padding:0.75rem 1rem">Batch</th>
+            <th style="padding:0.75rem 1rem">Branch / Sec</th>
+            <th style="padding:0.75rem 1rem">Attendance</th>
+            <th style="padding:0.75rem 1rem">Status</th>
+            <th style="padding:0.75rem 1rem;text-align:right">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${filtered.map(s => {
+            const dateDisplay = s.computedDate || '—';
+            let timeDisplay = '';
+            if (s.startTime?.toDate) {
+              timeDisplay = s.startTime.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            }
+            const presentCount = Array.isArray(s.presentRolls) ? s.presentRolls.length : (s.presentCount || 0);
+            const expectedCount = s.expectedCount || (Array.isArray(s.expectedRolls) ? s.expectedRolls.length : 0);
+            const pct = expectedCount > 0 ? Math.round((presentCount / expectedCount) * 100) : (presentCount > 0 ? 100 : 0);
+            const isEnded = s.status === 'ended';
+            const statusBadge = isEnded
+              ? '<span class="badge" style="background:#f1f5f9;color:#64748b;font-size:0.75rem">Completed</span>'
+              : '<span class="badge" style="background:#ecfdf5;color:#10b981;font-size:0.75rem">Active</span>';
+
+            return `
+              <tr style="border-bottom:1px solid var(--border)">
+                <td style="padding:0.75rem 1rem">
+                  <div style="font-weight:600;font-size:0.88rem;color:#0f172a">${escapeHtml(dateDisplay)}</div>
+                  <div style="font-size:0.76rem;color:var(--text-muted)">${escapeHtml(timeDisplay)}</div>
+                </td>
+                <td style="padding:0.75rem 1rem;font-weight:600;font-size:0.88rem">${escapeHtml(s.className || 'General')}</td>
+                <td style="padding:0.75rem 1rem;color:var(--text-muted);font-size:0.85rem">${escapeHtml(s.subject || 'Session')}</td>
+                <td style="padding:0.75rem 1rem">
+                  <span class="badge" style="background:#eff6ff;color:#2563eb;font-size:0.78rem;font-weight:600">${escapeHtml(s.batch || 'ALL')}</span>
+                </td>
+                <td style="padding:0.75rem 1rem;font-size:0.82rem">
+                  ${escapeHtml(s.branch || 'ALL')} ${s.section && s.section !== 'ALL' ? '(' + escapeHtml(s.section) + ')' : ''}
+                </td>
+                <td style="padding:0.75rem 1rem">
+                  <div style="font-weight:700;color:#10b981;font-size:0.88rem">${presentCount} Present</div>
+                  <div style="font-size:0.76rem;color:var(--text-muted)">${expectedCount ? expectedCount + ' enrolled (' + pct + '%)' : ''}</div>
+                </td>
+                <td style="padding:0.75rem 1rem">${statusBadge}</td>
+                <td style="padding:0.75rem 1rem;text-align:right">
+                  <div style="display:inline-flex;gap:0.4rem">
+                    <button class="btn btn-outline" style="padding:0.35rem 0.65rem;font-size:0.78rem;display:inline-flex;align-items:center;gap:0.3rem" onclick="viewSessionDetails('${escapeHtml(s.id)}')">
+                      <svg class="icon-svg" style="width:13px;height:13px" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                      <span>View</span>
+                    </button>
+                    <button class="btn btn-outline" style="padding:0.35rem 0.65rem;font-size:0.78rem;color:#059669;border-color:#a7f3d0;display:inline-flex;align-items:center;gap:0.3rem" onclick="exportSingleSessionXLSX('${escapeHtml(s.id)}')">
+                      <svg class="icon-svg" style="width:13px;height:13px" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                      <span>Excel</span>
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function filterPastSessionsTable() {
+  renderFilteredPastSessions();
+}
+
+async function viewSessionDetails(sessionId) {
+  const modal = document.getElementById('session-details-modal');
+  if (!modal) return;
+  modal.classList.add('show');
+
+  const titleEl = document.getElementById('sd-modal-title');
+  const subEl = document.getElementById('sd-modal-subtitle');
+  const container = document.getElementById('sd-students-table-container');
+
+  if (titleEl) titleEl.textContent = 'Loading Session Details…';
+  if (container) container.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--text-muted)"><span class="spinner"></span> Loading attendees from database...</div>';
+
+  try {
+    const sessionDoc = await db.collection('sessions').doc(sessionId).get();
+    if (!sessionDoc.exists) {
+      if (container) container.innerHTML = '<div style="padding:1.5rem;text-align:center;color:#ef4444">Session record not found.</div>';
+      return;
+    }
+
+    const session = { id: sessionDoc.id, ...sessionDoc.data() };
+    const dateStr = session.date || (session.startTime?.toDate ? session.startTime.toDate().toISOString().slice(0, 10) : '');
+    
+    if (titleEl) titleEl.textContent = (session.className || 'Session') + ' — ' + (session.subject || '');
+    if (subEl) subEl.textContent = dateStr + ' | Batch: ' + (session.batch || 'ALL') + ' | Branch: ' + (session.branch || 'ALL') + (session.section ? ' Sec ' + session.section : '');
+
+    const recSnap = await db.collection('attendance').doc(sessionId).collection('records').get();
+    const presentRecords = [];
+    recSnap.forEach(d => presentRecords.push({ id: d.id, ...d.data() }));
+
+    const enrolledStudents = getFilteredEnrolled(session.batch, session.branch, session.section);
+
+    const presentKeys = new Set();
+    presentRecords.forEach(r => {
+      const k1 = (r.rollNumber || '').trim().toUpperCase();
+      const k2 = (r.studentId || '').trim().toUpperCase();
+      const k3 = (r.email || r.personalEmail || '').trim().toLowerCase();
+      const k4 = (r.name || '').trim().toLowerCase();
+      if (k1) presentKeys.add(k1);
+      if (k2) presentKeys.add(k2);
+      if (k3) presentKeys.add(k3);
+      if (k4) presentKeys.add(k4);
+    });
+
+    const absentStudents = enrolledStudents.filter(s => {
+      const k1 = (s.rollNumber || '').trim().toUpperCase();
+      const k2 = (s.studentId || '').trim().toUpperCase();
+      const k3 = (s.email || '').trim().toLowerCase();
+      const k4 = (s.name || '').trim().toLowerCase();
+      return !presentKeys.has(k1) && !presentKeys.has(k2) && !presentKeys.has(k3) && !presentKeys.has(k4);
+    });
+
+    const totalEnrolled = enrolledStudents.length || (presentRecords.length + absentStudents.length);
+    const presentCount = presentRecords.length;
+    const absentCount = absentStudents.length;
+    const pct = totalEnrolled > 0 ? Math.round((presentCount / totalEnrolled) * 100) : 0;
+
+    document.getElementById('sd-stat-present').textContent = presentCount;
+    document.getElementById('sd-stat-absent').textContent = absentCount;
+    document.getElementById('sd-stat-pct').textContent = pct + '%';
+    document.getElementById('sd-present-tab-count').textContent = presentCount;
+    document.getElementById('sd-absent-tab-count').textContent = absentCount;
+
+    currentSelectedSessionData = {
+      session,
+      presentRecords,
+      absentStudents,
+      activeTab: 'present'
+    };
+
+    const exportBtn = document.getElementById('sd-export-btn');
+    if (exportBtn) {
+      exportBtn.onclick = () => exportSingleSessionXLSX(sessionId);
+    }
+
+    renderSdStudentsTable();
+  } catch (err) {
+    console.error('Failed to load session details:', err);
+    if (container) container.innerHTML = '<div style="padding:1.5rem;text-align:center;color:#ef4444">Error loading attendees: ' + escapeHtml(err.message) + '</div>';
+  }
+}
+
+function switchSdTab(tab) {
+  if (!currentSelectedSessionData) return;
+  currentSelectedSessionData.activeTab = tab;
+  document.getElementById('sd-tab-present')?.classList.toggle('active', tab === 'present');
+  document.getElementById('sd-tab-absent')?.classList.toggle('active', tab === 'absent');
+  renderSdStudentsTable();
+}
+
+function renderSdStudentsTable() {
+  const container = document.getElementById('sd-students-table-container');
+  if (!container || !currentSelectedSessionData) return;
+
+  const { presentRecords, absentStudents, activeTab } = currentSelectedSessionData;
+
+  if (activeTab === 'present') {
+    if (presentRecords.length === 0) {
+      container.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text-muted)">No students recorded present for this session.</div>';
+      return;
+    }
+    container.innerHTML = `
+      <table style="width:100%;border-collapse:collapse;font-size:0.85rem">
+        <thead>
+          <tr style="background:#f8fafc;border-bottom:1px solid var(--border);text-align:left;color:var(--text-muted)">
+            <th style="padding:0.6rem 0.85rem">#</th>
+            <th style="padding:0.6rem 0.85rem">Student Name</th>
+            <th style="padding:0.6rem 0.85rem">Roll Number / ID</th>
+            <th style="padding:0.6rem 0.85rem">Email</th>
+            <th style="padding:0.6rem 0.85rem">Batch</th>
+            <th style="padding:0.6rem 0.85rem">Time Checked-in</th>
+            <th style="padding:0.6rem 0.85rem">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${presentRecords.map((r, i) => {
+            let timeStr = '—';
+            if (r.markedAt?.toDate) {
+              timeStr = r.markedAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            }
+            return `
+              <tr style="border-bottom:1px solid var(--border)">
+                <td style="padding:0.6rem 0.85rem;color:var(--text-muted)">${i + 1}</td>
+                <td style="padding:0.6rem 0.85rem;font-weight:600">${escapeHtml(r.name || 'Student')}</td>
+                <td style="padding:0.6rem 0.85rem">${escapeHtml(r.rollNumber || r.studentId || '—')}</td>
+                <td style="padding:0.6rem 0.85rem;font-size:0.8rem;color:var(--text-muted)">${escapeHtml(r.email || r.personalEmail || '—')}</td>
+                <td style="padding:0.6rem 0.85rem"><span class="badge" style="background:#eff6ff;color:#2563eb;font-size:0.75rem">${escapeHtml(r.batch || '—')}</span></td>
+                <td style="padding:0.6rem 0.85rem;font-size:0.8rem">${timeStr}</td>
+                <td style="padding:0.6rem 0.85rem"><span class="badge" style="background:#ecfdf5;color:#10b981;font-size:0.75rem">Present</span></td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    `;
+  } else {
+    if (absentStudents.length === 0) {
+      container.innerHTML = '<div style="padding:2rem;text-align:center;color:#10b981;font-weight:600">100% Attendance! No absentees for this session.</div>';
+      return;
+    }
+    container.innerHTML = `
+      <table style="width:100%;border-collapse:collapse;font-size:0.85rem">
+        <thead>
+          <tr style="background:#f8fafc;border-bottom:1px solid var(--border);text-align:left;color:var(--text-muted)">
+            <th style="padding:0.6rem 0.85rem">#</th>
+            <th style="padding:0.6rem 0.85rem">Student Name</th>
+            <th style="padding:0.6rem 0.85rem">Roll Number / ID</th>
+            <th style="padding:0.6rem 0.85rem">Branch / Sec</th>
+            <th style="padding:0.6rem 0.85rem">Batch</th>
+            <th style="padding:0.6rem 0.85rem">Mobile (WhatsApp/SMS)</th>
+            <th style="padding:0.6rem 0.85rem">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${absentStudents.map((s, i) => `
+            <tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:0.6rem 0.85rem;color:var(--text-muted)">${i + 1}</td>
+              <td style="padding:0.6rem 0.85rem;font-weight:600">${escapeHtml(s.name || 'Student')}</td>
+              <td style="padding:0.6rem 0.85rem">${escapeHtml(s.rollNumber || s.studentId || '—')}</td>
+              <td style="padding:0.6rem 0.85rem">${escapeHtml(s.branch || '')} ${s.section ? '(' + escapeHtml(s.section) + ')' : ''}</td>
+              <td style="padding:0.6rem 0.85rem"><span class="badge" style="background:#f1f5f9;color:#64748b;font-size:0.75rem">${escapeHtml(s.batch || '—')}</span></td>
+              <td style="padding:0.6rem 0.85rem;font-size:0.82rem">${s.mobile ? '<a href="tel:' + escapeHtml(s.mobile) + '" style="color:#2563eb;text-decoration:none">' + escapeHtml(s.mobile) + '</a>' : '<span style="color:var(--text-muted)">—</span>'}</td>
+              <td style="padding:0.6rem 0.85rem"><span class="badge" style="background:#fef2f2;color:#ef4444;font-size:0.75rem">Absent</span></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+  }
+}
+
+function closeSessionDetailsModal() {
+  const modal = document.getElementById('session-details-modal');
+  if (modal) modal.classList.remove('show');
+  currentSelectedSessionData = null;
+}
+
+async function exportSingleSessionXLSX(sessionId) {
+  try {
+    showToast('Preparing session attendance Excel...', 'info');
+    const sessionDoc = await db.collection('sessions').doc(sessionId).get();
+    if (!sessionDoc.exists) return showToast('Session not found.', 'error');
+
+    const session = sessionDoc.data();
+    const dateStr = session.date || (session.startTime?.toDate ? session.startTime.toDate().toISOString().slice(0, 10) : 'date');
+    const safeName = String(session.className || 'Session').replace(/[^a-zA-Z0-9]+/g, '_');
+
+    const recSnap = await db.collection('attendance').doc(sessionId).collection('records').get();
+    const presentRecords = [];
+    recSnap.forEach(d => presentRecords.push(d.data()));
+
+    const enrolledStudents = getFilteredEnrolled(session.batch, session.branch, session.section);
+    const presentKeys = new Set();
+    presentRecords.forEach(r => {
+      const k1 = (r.rollNumber || '').trim().toUpperCase();
+      const k2 = (r.studentId || '').trim().toUpperCase();
+      const k3 = (r.email || r.personalEmail || '').trim().toLowerCase();
+      const k4 = (r.name || '').trim().toLowerCase();
+      if (k1) presentKeys.add(k1);
+      if (k2) presentKeys.add(k2);
+      if (k3) presentKeys.add(k3);
+      if (k4) presentKeys.add(k4);
+    });
+
+    const absentStudents = enrolledStudents.filter(s => {
+      const k1 = (s.rollNumber || '').trim().toUpperCase();
+      const k2 = (s.studentId || '').trim().toUpperCase();
+      const k3 = (s.email || '').trim().toLowerCase();
+      const k4 = (s.name || '').trim().toLowerCase();
+      return !presentKeys.has(k1) && !presentKeys.has(k2) && !presentKeys.has(k3) && !presentKeys.has(k4);
+    });
+
+    const wb = XLSX.utils.book_new();
+
+    const pRows = [['#', 'Roll Number', 'Full Name', 'Email', 'Batch', 'Branch', 'Section', 'Check-in Time', 'Status']];
+    presentRecords.forEach((r, idx) => {
+      let timeStr = '';
+      if (r.markedAt?.toDate) timeStr = r.markedAt.toDate().toLocaleTimeString();
+      pRows.push([idx + 1, r.rollNumber || r.studentId || '', r.name || '', r.email || r.personalEmail || '', r.batch || '', r.branch || '', r.section || '', timeStr, 'Present']);
+    });
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(pRows), 'Present Students');
+
+    const aRows = [['#', 'Roll Number', 'Full Name', 'Email', 'Mobile', 'Batch', 'Branch', 'Section', 'Status']];
+    absentStudents.forEach((s, idx) => {
+      aRows.push([idx + 1, s.rollNumber || s.studentId || '', s.name || '', s.email || '', s.mobile || '', s.batch || '', s.branch || '', s.section || '', 'Absent']);
+    });
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aRows), 'Absentees');
+
+    XLSX.writeFile(wb, 'Attendance_' + safeName + '_' + (session.batch || 'Batch') + '_' + dateStr + '.xlsx');
+    showToast('Downloaded attendance for ' + (session.className || 'Session') + '!', 'success');
+  } catch (err) {
+    console.error('Export session error:', err);
+    showToast('Failed to export session: ' + err.message, 'error');
+  }
+}
+
+async function exportFilteredPastSessionsXLSX() {
+  if (!cachedPastSessionsList || cachedPastSessionsList.length === 0) {
+    return showToast('No sessions available to export.', 'info');
+  }
+
+  const batchFilter = document.getElementById('past-filter-batch')?.value || 'ALL';
+  const dateFilter = document.getElementById('past-filter-date')?.value || '';
+
+  let list = [...cachedPastSessionsList];
+  if (batchFilter !== 'ALL') {
+    list = list.filter(s => (s.batch || '').trim().toUpperCase() === batchFilter.trim().toUpperCase());
+  }
+  if (dateFilter) {
+    list = list.filter(s => s.computedDate === dateFilter);
+  }
+
+  if (list.length === 0) return showToast('No sessions match current filters to export.', 'info');
+
+  const wb = XLSX.utils.book_new();
+  const rows = [['Date', 'Time', 'Class Name', 'Subject', 'Batch', 'Branch', 'Section', 'Present Count', 'Expected Enrolled', 'Attendance %', 'Status', 'Session ID']];
+
+  list.forEach(s => {
+    let timeStr = '';
+    if (s.startTime?.toDate) timeStr = s.startTime.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const presentCount = Array.isArray(s.presentRolls) ? s.presentRolls.length : (s.presentCount || 0);
+    const expected = s.expectedCount || 0;
+    const pct = expected > 0 ? Math.round((presentCount / expected) * 100) + '%' : (presentCount > 0 ? '100%' : '0%');
+    rows.push([
+      s.computedDate || '',
+      timeStr,
+      s.className || '',
+      s.subject || '',
+      s.batch || 'ALL',
+      s.branch || 'ALL',
+      s.section || 'ALL',
+      presentCount,
+      expected,
+      pct,
+      s.status || 'ended',
+      s.id || ''
+    ]);
+  });
+
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Past Sessions Summary');
+  const filename = 'AttendX_Sessions_Report_' + batchFilter + '_' + (dateFilter || 'AllDates') + '.xlsx';
+  XLSX.writeFile(wb, filename);
+  showToast('Exported ' + list.length + ' sessions report (.xlsx)!', 'success');
 }
