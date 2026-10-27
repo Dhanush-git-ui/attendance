@@ -22,6 +22,8 @@ let masterRegistrationAttempts = [];
 let currentRosterTab = 'all'; // 'all' | 'review' | 'conflicts'
 let currentAttTab = 'present'; // 'present' | 'absent'
 let currentSearchQuery = '';
+let dailyHistoryCache = null;
+let dailyHistoryPromise = null;
 
 // ---- Auth Guard ----
 auth.onAuthStateChanged(async (user) => {
@@ -185,8 +187,99 @@ async function rejectTrainer(uid) {
 
 // Initialize Master Roster on Page Load
 document.addEventListener('DOMContentLoaded', () => {
+  const dateInput = document.getElementById('sheet-date');
+  if (dateInput) dateInput.value = new Date().toISOString().slice(0, 10);
   loadMasterRoster();
+  loadDailySheet();
 });
+
+function dailySheetSessionId(date, batch, branch, section) {
+  const safe = value => String(value || 'ALL').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  return `manual_${date}_${safe(batch)}_${safe(branch)}_${safe(section)}`;
+}
+
+function dailyStudentKey(student) {
+  return String(student.rollNumber || student.studentId || student.email || student.name || '').trim().toUpperCase();
+}
+
+async function getAttendanceSessionHistory() {
+  if (dailyHistoryCache) return dailyHistoryCache;
+  if (dailyHistoryPromise) return dailyHistoryPromise;
+  dailyHistoryPromise = db.collection('sessions').get().then(async snapshot => {
+    dailyHistoryCache = await Promise.all(snapshot.docs.map(async doc => {
+      const data = { id: doc.id, ...(doc.data() || {}) };
+      if (!data.date && data.startTime?.toDate) data.date = data.startTime.toDate().toISOString().slice(0, 10);
+      if (!Array.isArray(data.presentRolls)) {
+        const records = await db.collection('attendance').doc(doc.id).collection('records').get();
+        data.presentRolls = records.docs.map(record => dailyStudentKey(record.data() || {})).filter(Boolean);
+      }
+      return data;
+    }));
+    return dailyHistoryCache;
+  }).finally(() => { dailyHistoryPromise = null; });
+  return dailyHistoryPromise;
+}
+
+async function loadDailySheet() {
+  const body = document.getElementById('daily-sheet-body');
+  if (!body) return;
+  if (!masterRoster.length) {
+    body.innerHTML = '<tr><td colspan="4" style="padding:1rem;color:var(--text-muted)">Load the student roster first.</td></tr>';
+    return;
+  }
+  const date = document.getElementById('sheet-date')?.value || new Date().toISOString().slice(0, 10);
+  const batch = document.getElementById('session-batch')?.value || 'ALL';
+  const branch = document.getElementById('session-branch')?.value || 'ALL';
+  const section = document.getElementById('session-section')?.value || 'ALL';
+  const students = getFilteredEnrolled(batch, branch, section);
+  const sessionId = dailySheetSessionId(date, batch, branch, section);
+  body.innerHTML = '<tr><td colspan="4" style="padding:1rem">Loading attendance…</td></tr>';
+  try {
+    const [sessionDoc, history] = await Promise.all([
+      db.collection('sessions').doc(sessionId).get(),
+      getAttendanceSessionHistory()
+    ]);
+    const present = new Set(sessionDoc.exists ? (sessionDoc.data().presentRolls || []) : []);
+    history.filter(day => day.date === date).forEach(day => {
+      const inSelectedGroup = (!day.batch || day.batch === 'ALL' || batch === 'ALL' || day.batch === batch)
+        && (!day.branch || day.branch === 'ALL' || branch === 'ALL' || day.branch === branch)
+        && (!day.section || day.section === 'ALL' || section === 'ALL' || day.section === section);
+      if (inSelectedGroup) (day.presentRolls || []).forEach(key => present.add(key));
+    });
+    const counts = new Map();
+    students.forEach(student => {
+      const key = dailyStudentKey(student);
+      const classDays = new Map();
+      history.forEach(day => {
+        const inGroup = (!day.batch || day.batch === 'ALL' || day.batch === student.batch)
+          && (!day.branch || day.branch === 'ALL' || day.branch === student.branch)
+          && (!day.section || day.section === 'ALL' || day.section === student.section);
+        if (inGroup && day.date) {
+          if (!classDays.has(day.date)) classDays.set(day.date, false);
+          if ((day.presentRolls || []).includes(key)) classDays.set(day.date, true);
+        }
+      });
+      const total = classDays.size;
+      const attended = Array.from(classDays.values()).filter(Boolean).length;
+      counts.set(key, `${attended} / ${total}`);
+    });
+    body.innerHTML = students.map((student, index) => {
+      const key = dailyStudentKey(student);
+      return `<tr style="border-top:1px solid var(--border)">
+        <td style="padding:.5rem">${escapeHtml(student.name || 'Student')} <small style="color:var(--text-muted)">${escapeHtml(student.rollNumber || student.studentId || '')}</small></td>
+        <td style="text-align:center">${escapeHtml(student.batch || '—')}</td>
+        <td style="text-align:center"><input type="checkbox" aria-label="${escapeHtml(student.name || 'student')} attendance" ${present.has(key) ? 'checked' : ''} disabled></td>
+        <td style="text-align:center">${counts.get(key) || '0 / 0'}</td></tr>`;
+    }).join('') || '<tr><td colspan="4" style="padding:1rem">No students match these filters.</td></tr>';
+    window.dailySheetStudents = students;
+    window.dailySheetContext = { date, batch, branch, section, sessionId };
+    const summary = document.getElementById('sheet-summary');
+    if (summary) summary.textContent = `${present.size} present · ${students.length} students · ${history.length} saved class sessions`;
+  } catch (error) {
+    console.error('Daily attendance sheet load failed:', error);
+    body.innerHTML = '<tr><td colspan="4" style="padding:1rem;color:#b91c1c">Could not load the saved sheet. Check connection and permissions.</td></tr>';
+  }
+}
 
 // ---- Start Session ----
 async function startSession() {
@@ -217,12 +310,15 @@ async function startSession() {
     sessionDocRef = db.collection('sessions').doc();
     const sessionPayload = {
       id: sessionDocRef.id,
+      sessionType: 'qr_attendance',
+      date: now.toISOString().slice(0, 10),
       className,
       subject,
       batch,
       branch,
       section,
       expectedCount: targetStudents.length || 0,
+      expectedRolls: targetStudents.map(dailyStudentKey),
       adminId: currentUser?.uid || 'admin',
       adminName: currentUser?.name || 'Admin',
       startTime: firebase.firestore.FieldValue.serverTimestamp(),
@@ -240,6 +336,7 @@ async function startSession() {
     currentSession = {
       id: sessionDocRef.id,
       className,
+      date: now.toISOString().slice(0, 10),
       subject,
       batch,
       branch,
@@ -399,6 +496,15 @@ function listenAttendance() {
       .onSnapshot((snap) => {
         attendanceData = [];
         snap.forEach(doc => attendanceData.push({ id: doc.id, ...doc.data() }));
+        const presentRolls = attendanceData.map(dailyStudentKey);
+        sessionDocRef?.update({ presentRolls }).then(() => {
+          if (dailyHistoryCache && currentSession) {
+            const cached = dailyHistoryCache.find(day => day.id === currentSession.id);
+            if (cached) cached.presentRolls = presentRolls;
+            else dailyHistoryCache.push({ ...currentSession, presentRolls });
+          }
+          loadDailySheet();
+        }).catch(() => {});
         updateStatsAndLists();
       }, (err) => {
         console.warn('Attendance snapshot note:', err);
@@ -571,6 +677,7 @@ function loadMasterRoster() {
           localStorage.setItem('attendx_master_roster', JSON.stringify(masterRoster));
           populateRosterFilters();
           updateRosterUI();
+          loadDailySheet();
         }
       }
     }).catch(() => {});
@@ -620,6 +727,7 @@ function saveMasterRoster(students, mode = null) {
 
   populateRosterFilters();
   updateRosterUI();
+  loadDailySheet();
   updateStatsAndLists();
 }
 
@@ -1411,8 +1519,9 @@ function switchRosterTab(tab) {
           <th>Personal Email</th>
           <th>Branch</th>
           <th>Sec</th>
-          <th>Batch</th>
+          <th>Correct Batch</th>
           <th>Status</th>
+          <th>Action</th>
         </tr>
       `;
     }
@@ -1425,11 +1534,11 @@ function renderRosterPreview(list) {
   if (!tbody) return;
 
   if (!list.length) {
-    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:1.5rem">No students uploaded yet. Drag & drop your Google Sheet CSV above.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:1.5rem">No students uploaded yet. Drag & drop your Google Sheet CSV above.</td></tr>`;
     return;
   }
 
-  tbody.innerHTML = list.slice(0, 100).map(s => {
+  tbody.innerHTML = list.map(s => {
     const isVerified = s.status === 'verified' && s.batch && s.email;
     const badgeColor = isVerified ? '#10b981' : '#f59e0b';
     const badgeBg = isVerified ? '#ecfdf5' : '#fffbeb';
@@ -1441,11 +1550,57 @@ function renderRosterPreview(list) {
         <td>${s.email ? escapeHtml(s.email) : '<span style="color:#ef4444;font-style:italic">Missing Email</span>'}</td>
         <td><span class="badge" style="background:#eff6ff;color:#2563eb;font-size:0.75rem">${escapeHtml(s.branch)}</span></td>
         <td>${escapeHtml(s.section || 'A')}</td>
-        <td>${s.batch ? `<span class="badge" style="background:#f1f5f9;color:#475569;font-size:0.75rem">${escapeHtml(s.batch)}</span>` : '<span style="color:#d97706;font-style:italic">Unassigned</span>'}</td>
+        <td><select id="roster-batch-${encodeURIComponent(s.email || s.rollNumber || s.name)}" style="padding:.25rem;font-size:.78rem" ${!s.email ? 'disabled' : ''}>
+          <option value="BATCH - 1" ${s.batch === 'BATCH - 1' ? 'selected' : ''}>BATCH - 1</option>
+          <option value="BATCH - 2" ${s.batch === 'BATCH - 2' ? 'selected' : ''}>BATCH - 2</option>
+          <option value="BATCH - 3" ${s.batch === 'BATCH - 3' ? 'selected' : ''}>BATCH - 3</option>
+        </select></td>
         <td><span class="badge" style="background:${badgeBg};color:${badgeColor};border:1px solid ${badgeColor}33;font-size:0.75rem">${statusLabel}</span></td>
+        <td><button class="btn btn-outline" style="padding:.25rem .5rem;font-size:.75rem" onclick="correctRosterBatch('${escapeHtml(s.email || '')}', 'roster-batch-${encodeURIComponent(s.email || s.rollNumber || s.name)}')" ${!s.email ? 'disabled' : ''}>Save</button></td>
       </tr>
     `;
-  }).join('') + (list.length > 100 ? `<tr><td colspan="6" style="text-align:center;font-size:0.75rem;color:var(--text-muted);padding:0.5rem">Showing first 100 of ${list.length} students...</td></tr>` : '');
+  }).join('');
+}
+
+async function correctRosterBatch(email, selectId) {
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  const batch = document.getElementById(selectId)?.value;
+  if (!normalizedEmail || !['BATCH - 1', 'BATCH - 2', 'BATCH - 3'].includes(batch)) return;
+  try {
+    let handled = false;
+    if (typeof firebase !== 'undefined' && typeof firebase.functions === 'function') {
+      try {
+        const updateBatch = firebase.functions().httpsCallable('correctStudentBatch');
+        await updateBatch({ email: normalizedEmail, batch });
+        handled = true;
+      } catch (fnErr) {
+        console.warn('correctStudentBatch callable unavailable, using direct Firestore:', fnErr.message);
+      }
+    }
+    if (!handled) {
+      const rosterDoc = await db.collection('settings').doc('student_roster').get();
+      if (rosterDoc.exists) {
+        const students = rosterDoc.data().students || [];
+        const idx = students.findIndex(s => s.email && s.email.toLowerCase() === normalizedEmail);
+        if (idx !== -1) {
+          students[idx].batch = batch;
+          await db.collection('settings').doc('student_roster').set({ students }, { merge: true });
+        }
+      }
+      const userSnap = await db.collection('users').where('email', '==', normalizedEmail).limit(1).get();
+      if (!userSnap.empty) {
+        await userSnap.docs[0].ref.update({ batch });
+      }
+    }
+    masterRoster = masterRoster.map(student => student.email?.toLowerCase() === normalizedEmail ? { ...student, batch } : student);
+    localStorage.setItem('attendx_master_roster', JSON.stringify(masterRoster));
+    populateRosterFilters();
+    updateRosterUI();
+    showToast(`Batch updated to ${batch}. Existing account profile synchronized.`, 'success');
+  } catch (error) {
+    console.error('Batch correction failed:', error);
+    showToast(error.message || 'Could not update student batch.', 'error');
+  }
 }
 
 function renderRosterReviewList(list) {
@@ -1943,88 +2098,22 @@ function exportMasterWorkbookXLSX() {
   const dateStr = new Date().toISOString().slice(0, 10);
   const sessionName = currentSession?.className || 'General';
 
-  // 1. Sheet: Current Session Attendance
-  if (attendanceData.length || currentSession) {
-    let enrolled = currentSession ? getFilteredEnrolled(currentSession.batch, currentSession.branch, currentSession.section) : masterRoster;
-    const presentMap = new Map();
-    attendanceData.forEach(r => {
-      const roll = (r.rollNumber || r.studentId || '').trim().toUpperCase();
-      if (roll) presentMap.set(roll, r);
-    });
-
-    const attRows = [
-      ['Roll Number', 'Name', 'Branch', 'Section', 'Batch', 'Mobile Number', 'Email', 'Attendance Status', 'Marked At', 'Session ID']
-    ];
-
-    enrolled.forEach(s => {
-      const roll = (s.rollNumber || '').trim().toUpperCase();
-      const rec = presentMap.get(roll);
-      const isPresent = Boolean(rec);
-      attRows.push([
-        s.rollNumber || '',
-        s.name || '',
-        s.branch || '',
-        s.section || '',
-        s.batch || '',
-        s.mobile || '',
-        s.email || '',
-        isPresent ? 'Present' : 'Absent',
-        isPresent ? formatTime(rec.markedAt) : '—',
-        currentSession?.id || '—'
-      ]);
-    });
-
-    const attWs = XLSX.utils.aoa_to_sheet(attRows);
-    XLSX.utils.book_append_sheet(wb, attWs, 'Session Attendance');
-  }
-
-  // 2. Multi-Sheet Batch Rosters
-  const batches = ['BATCH - 1', 'BATCH - 2', 'BATCH - 3'];
-  batches.forEach(bName => {
-    const batchStudents = masterRoster.filter(s => (s.batch || '').trim().toUpperCase() === bName);
-    const rows = [
-      ['Full Name', 'Branch', 'Section', 'Email', 'Mobile Number', 'Roll Number', 'Status']
-    ];
-    batchStudents.forEach(s => {
-      rows.push([
-        s.name || '',
-        s.branch || '',
-        s.section || '',
-        s.email || '',
-        s.mobile || '',
-        s.rollNumber || '',
-        s.status || 'verified'
-      ]);
-    });
-    const ws = XLSX.utils.aoa_to_sheet(rows);
-    XLSX.utils.book_append_sheet(wb, ws, bName);
-  });
-
-  // 3. Self-registered / Unassigned / Admin Added
-  const otherStudents = masterRoster.filter(s => !batches.includes((s.batch || '').trim().toUpperCase()));
-  if (otherStudents.length) {
-    const rows = [
-      ['Full Name', 'Branch', 'Section', 'Batch', 'Email', 'Mobile Number', 'Roll Number', 'Status', 'Source']
-    ];
-    otherStudents.forEach(s => {
-      rows.push([
-        s.name || '',
-        s.branch || '',
-        s.section || '',
-        s.batch || '',
-        s.email || '',
-        s.mobile || '',
-        s.rollNumber || '',
-        s.status || 'verified',
-        s.sourceSheet || 'Admin Added'
-      ]);
-    });
-    const ws = XLSX.utils.aoa_to_sheet(rows);
-    XLSX.utils.book_append_sheet(wb, ws, 'Additional Students');
-  }
+  // Exports are attendance reports only: include checked-in students and no roster tabs.
+  const sheetStudents = window.dailySheetStudents || [];
+  const sheetChecks = Array.from(document.querySelectorAll('#daily-sheet-body input[type="checkbox"]'));
+  const manualPresent = sheetStudents.filter((_, index) => sheetChecks[index]?.checked);
+  const exportStudents = currentSession ? attendanceData : manualPresent;
+  const exportSessionId = currentSession?.id || window.dailySheetContext?.sessionId || '';
+  const presentRows = [['Roll Number', 'Name', 'Branch', 'Section', 'Batch', 'Marked At', 'Session ID']];
+  exportStudents.forEach(r => presentRows.push([
+    r.rollNumber || r.studentId || '', r.name || '', r.branch || '', r.section || '', r.batch || '',
+    r.markedAt ? formatTime(r.markedAt) : '', exportSessionId
+  ]));
+  if (!exportStudents.length) return showToast('No present students to export yet.', 'info');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(presentRows), 'Present Students');
 
   XLSX.writeFile(wb, `AttendX_Master_Roster_${sessionName}_${dateStr}.xlsx`);
-  showToast('Downloaded complete synced Excel workbook (.xlsx)!', 'success');
+  showToast(`Downloaded ${exportStudents.length} present students (.xlsx).`, 'success');
 }
 
 // ---- End Session ----

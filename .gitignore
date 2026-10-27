@@ -36,3 +36,5 @@ private-data/
 data/roster.json
 js/roster-data.js
 dist/
+.vercel
+.env*

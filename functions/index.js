@@ -328,6 +328,39 @@ exports.verifyStudentRegistration = functions.https.onCall(async (data, context)
   };
 });
 
+// Staff-only correction for roster batch mistakes; keep the roster and existing
+// Firebase student profile in sync so registration, filters and scan records agree.
+exports.correctStudentBatch = functions.https.onCall(async (data, context) => {
+  if (!context.auth || !context.auth.uid) {
+    throw new functions.https.HttpsError('unauthenticated', 'Sign in as staff to correct a batch.');
+  }
+  const actor = await db.collection('users').doc(context.auth.uid).get();
+  const actorData = actor.exists ? actor.data() : {};
+  const allowed = actorData.role === 'admin' || (actorData.role === 'trainer' && actorData.status === 'approved');
+  if (!allowed) throw new functions.https.HttpsError('permission-denied', 'Only approved staff can correct student batches.');
+
+  const email = String(data?.email || '').trim().toLowerCase();
+  const batch = String(data?.batch || '').trim().toUpperCase();
+  if (!email || !['BATCH - 1', 'BATCH - 2', 'BATCH - 3'].includes(batch)) {
+    throw new functions.https.HttpsError('invalid-argument', 'Choose a student email and a valid batch.');
+  }
+  const rosterRef = db.collection('settings').doc('student_roster');
+  const rosterDoc = await rosterRef.get();
+  if (!rosterDoc.exists || !Array.isArray(rosterDoc.data().students)) {
+    throw new functions.https.HttpsError('not-found', 'The student roster is not available.');
+  }
+  const roster = rosterDoc.data().students;
+  const matches = roster.filter(student => String(student.email || '').trim().toLowerCase() === email);
+  if (matches.length !== 1) throw new functions.https.HttpsError('failed-precondition', 'This email must match exactly one roster student.');
+  const updatedStudents = roster.map(student => String(student.email || '').trim().toLowerCase() === email ? { ...student, batch } : student);
+  await rosterRef.set({ students: updatedStudents, updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+  const profiles = await db.collection('users').where('email', '==', email).get();
+  const batchWriter = db.batch();
+  profiles.docs.forEach(profile => batchWriter.update(profile.ref, { batch, updatedAt: admin.firestore.FieldValue.serverTimestamp() }));
+  if (!profiles.empty) await batchWriter.commit();
+  return { success: true, email, batch, profilesUpdated: profiles.size };
+});
+
 
 
 /**

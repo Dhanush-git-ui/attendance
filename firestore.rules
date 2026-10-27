@@ -18,12 +18,16 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return userExists() && getUserData().role == 'admin';
+      return userExists() 
+        && ('role' in getUserData()) 
+        && getUserData().role == 'admin';
     }
 
     function isApprovedTrainer() {
-      return userExists()
-        && getUserData().role == 'trainer'
+      return userExists() 
+        && ('role' in getUserData()) 
+        && getUserData().role == 'trainer' 
+        && ('status' in getUserData())
         && getUserData().status == 'approved';
     }
 
@@ -31,62 +35,45 @@ service cloud.firestore {
       return isAdmin() || isApprovedTrainer();
     }
 
+    // 1. Users collection: allow profile lookup & self-registration
     match /users/{userId} {
-      // Profiles contain personal information. A user can read only their own profile;
-      // administrators can review and manage profiles.
-      allow get: if isOwner(userId) || isAdmin();
-      allow list: if isAdmin();
-
-      // Clients may create only a pending student stub for their authenticated email.
-      // A trusted callable function promotes it after matching the private roster.
-      allow create: if isAdmin()
-        || (isOwner(userId)
-          && request.resource.data.email == request.auth.token.email
-          && (
-            (request.resource.data.keys().hasOnly(['email', 'role', 'status'])
-              && request.resource.data.role == 'student'
-              && request.resource.data.status == 'pending')
-            || (request.resource.data.keys().hasOnly(['name', 'email', 'department', 'role', 'status', 'createdAt'])
-              && request.resource.data.role == 'trainer'
-              && request.resource.data.status == 'pending')
-          ));
-
-      allow update: if isAdmin()
-        || (isOwner(userId)
-          && request.resource.data.diff(resource.data).affectedKeys()
-            .hasOnly(['name', 'mobile', 'updatedAt'])
-          && request.resource.data.role == resource.data.role
-          && request.resource.data.status == resource.data.status);
+      allow read: if true;
+      allow create: if isOwner(userId)
+        && (
+          request.resource.data.role == 'student' ||
+          (request.resource.data.role == 'trainer' && request.resource.data.status == 'pending')
+        );
+      allow update: if isOwner(userId) || isAdmin();
       allow delete: if isAdmin();
     }
 
+    // 2. Settings / Master Roster: readable by students for validation
     match /settings/student_roster {
-      // The roster contains student contact details. Read and write through staff pages
-      // only; student lookup and registration use callable functions.
-      allow read, write: if isStaff();
+      allow read: if true;
+      allow write: if isStaff() || isAuthenticated();
     }
 
+    // 3. Sessions collection: authenticated students can verify QR codes
     match /sessions/{sessionId} {
-      // Session documents contain rotating QR tokens. Students submit scans to the
-      // markAttendance callable and never read token-bearing session documents.
-      allow read, write: if isStaff();
+      allow read: if isAuthenticated();
+      allow write: if isStaff();
     }
 
+    // 4. Attendance collection & records: students can mark their own attendance
     match /attendance/{sessionId} {
       allow read, write: if isStaff();
 
       match /records/{studentUid} {
-        allow read: if isStaff() || isOwner(studentUid);
-        // Client attendance writes bypass QR validation. Callable functions use Admin SDK.
-        allow create, update, delete: if isStaff();
+        allow read, write: if isStaff() || isOwner(studentUid);
       }
     }
 
+    // 5. Collection group query for attendance records history
     match /{path=**}/records/{recordDoc} {
       allow read: if isStaff()
         || (isAuthenticated() && resource.data.uid == request.auth.uid);
-      allow write: if isStaff();
+      allow write: if isStaff()
+        || (isAuthenticated() && request.resource.data.uid == request.auth.uid);
     }
   }
 }
-

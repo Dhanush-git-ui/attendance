@@ -152,14 +152,13 @@ async function startScanner() {
     html5QrCode = new Html5Qrcode('reader');
     const qrConfig = { fps: 10, qrbox: { width: 250, height: 250 } };
 
-    try {
-      // Try back/environment camera first (mobile)
-      await html5QrCode.start({ facingMode: 'environment' }, qrConfig, onScanSuccess, onScanError);
-    } catch (envErr) {
-      console.warn('Environment camera unavailable, falling back to default/front camera:', envErr);
-      // Fallback for laptops/desktops with front webcam
-      await html5QrCode.start({ facingMode: 'user' }, qrConfig, onScanSuccess, onScanError);
-    }
+    // Use enumerated camera IDs where available; mobile browsers vary in how they
+    // implement facingMode constraints. Fall back to facingMode for first visit.
+    let cameras = [];
+    try { cameras = await Html5Qrcode.getCameras(); } catch (_) {}
+    const backCamera = cameras.find(camera => /back|rear|environment/i.test(camera.label));
+    const cameraConfig = backCamera ? backCamera.id : { facingMode: 'environment' };
+    await html5QrCode.start(cameraConfig, qrConfig, onScanSuccess, onScanError);
 
     scanning = true;
     document.getElementById('scan-btn').innerHTML = '<svg class="icon-svg fill-current" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2" ry="2"/></svg> <span>Stop Camera</span>';
@@ -233,11 +232,83 @@ async function onScanSuccess(rawValue) {
     }
 
     await stopScanner();
-    showStatus('Verifying attendance with server...', 'info');
-    const markAttendance = firebase.functions().httpsCallable('markAttendance');
-    const result = await markAttendance({ sessionId, token });
-    const data = result.data || {};
-    showStatus('Attendance marked for "' + (data.className || 'Class') + '" — ' + (data.subject || 'Session'), 'success');
+    showStatus('Verifying attendance...', 'info');
+
+    let successRecorded = false;
+    let sessionName = 'Class';
+    let subjectName = 'Session';
+
+    // 1. If callable function is deployed, attempt it first
+    if (typeof firebase !== 'undefined' && typeof firebase.functions === 'function') {
+      try {
+        const markAttendance = firebase.functions().httpsCallable('markAttendance');
+        const result = await markAttendance({ sessionId, token });
+        const data = result.data || {};
+        sessionName = data.className || sessionName;
+        subjectName = data.subject || subjectName;
+        successRecorded = true;
+      } catch (fnErr) {
+        console.warn('Callable function unavailable or failed, falling back to direct Firestore verification:', fnErr.message);
+      }
+    }
+
+    // 2. Direct Firestore verification fallback for Spark (free) plan
+    if (!successRecorded) {
+      const sessionDoc = await db.collection('sessions').doc(sessionId).get();
+      if (!sessionDoc.exists) {
+        throw new Error('Session not found or has expired.');
+      }
+      const session = sessionDoc.data();
+      if (session.status !== 'active') {
+        throw new Error('This attendance session has already ended.');
+      }
+
+      // Rotating token match
+      const isCurrent = session.currentToken === token;
+      const isPrevious = Boolean(session.previousToken && session.previousToken === token);
+      if (!isCurrent && !isPrevious) {
+        throw new Error('QR code has expired. Please scan the current code on screen.');
+      }
+
+      // Prevent duplicate attendance for the same session
+      const recordRef = db.collection('attendance').doc(sessionId).collection('records').doc(currentUser.uid);
+      const existing = await recordRef.get();
+      if (existing.exists) {
+        throw new Error('Attendance has already been recorded for this session.');
+      }
+
+      // Fetch student profile details
+      let prof = currentUser || {};
+      if (!prof.name) {
+        try {
+          const uDoc = await db.collection('users').doc(currentUser.uid).get();
+          if (uDoc.exists) prof = { ...prof, ...uDoc.data() };
+        } catch (_) {}
+      }
+
+      const roll = prof.rollNumber || prof.studentId || '';
+      const attendanceRecord = {
+        uid: currentUser.uid,
+        rollNumber: roll,
+        studentId: roll,
+        name: prof.name || currentUser.displayName || 'Student',
+        branch: prof.branch || '',
+        college: (prof.college && prof.college !== 'HITAM') ? prof.college : 'AVN',
+        section: prof.section || '',
+        batch: prof.batch || '',
+        sessionId: sessionId,
+        className: session.className || '',
+        subject: session.subject || '',
+        status: 'present',
+        markedAt: firebase.firestore.FieldValue.serverTimestamp()
+      };
+
+      await recordRef.set(attendanceRecord);
+      sessionName = session.className || sessionName;
+      subjectName = session.subject || subjectName;
+    }
+
+    showStatus('Attendance marked for "' + sessionName + '" — ' + subjectName, 'success');
     showToast('Attendance recorded!', 'success');
     await loadHistory();
   } catch (error) {

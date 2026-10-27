@@ -218,19 +218,19 @@
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.6rem;margin-bottom:0.75rem">
             <div class="form-group" style="margin-bottom:0">
               <label style="font-size:0.78rem">Batch / Year</label>
-              <select id="session-batch" onchange="updateExpectedCount()" style="padding:0.5rem 0.6rem;font-size:0.85rem">
+              <select id="session-batch" onchange="updateExpectedCount();loadDailySheet()" style="padding:0.5rem 0.6rem;font-size:0.85rem">
                 <option value="ALL">All Batches</option>
               </select>
             </div>
             <div class="form-group" style="margin-bottom:0">
               <label style="font-size:0.78rem">Branch / Dept</label>
-              <select id="session-branch" onchange="updateExpectedCount()" style="padding:0.5rem 0.6rem;font-size:0.85rem">
+              <select id="session-branch" onchange="updateExpectedCount();loadDailySheet()" style="padding:0.5rem 0.6rem;font-size:0.85rem">
                 <option value="ALL">All Branches</option>
               </select>
             </div>
             <div class="form-group" style="margin-bottom:0">
               <label style="font-size:0.78rem">Section</label>
-              <select id="session-section" onchange="updateExpectedCount()" style="padding:0.5rem 0.6rem;font-size:0.85rem">
+              <select id="session-section" onchange="updateExpectedCount();loadDailySheet()" style="padding:0.5rem 0.6rem;font-size:0.85rem">
                 <option value="ALL">All Sections</option>
               </select>
             </div>
@@ -313,6 +313,19 @@
           </div>
         </div>
 
+        <div class="card" style="margin-bottom:1rem">
+          <div class="section-title">Daily Attendance Spreadsheet</div>
+          <p style="color:var(--text-muted);font-size:.85rem">Select the class group and date, then tick present students. Changes are saved to the attendance database.</p>
+          <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:end;margin-bottom:.75rem">
+            <label>Date <input id="sheet-date" type="date" onchange="loadDailySheet()"></label>
+            <button class="btn btn-outline" onclick="loadDailySheet()">Load sheet</button>
+            <span id="sheet-summary" style="font-size:.85rem;color:var(--text-muted)"></span>
+          </div>
+          <div style="overflow:auto"><table style="width:100%;border-collapse:collapse;min-width:620px">
+            <thead><tr><th style="text-align:left;padding:.5rem">Student</th><th>Batch</th><th>Present</th><th>Attended days / total days</th></tr></thead>
+            <tbody id="daily-sheet-body"><tr><td colspan="4" style="padding:1rem;color:var(--text-muted)">Upload or load the student roster to start.</td></tr></tbody>
+          </table></div>
+        </div>
         <div class="card">
           <div class="section-title" style="justify-content:space-between;flex-wrap:wrap;gap:0.5rem">
             <span style="display:flex;align-items:center;gap:0.45rem">
@@ -327,14 +340,7 @@
 
             <!-- Export Buttons Dropdown / Row -->
             <div style="display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap">
-              <button class="btn btn-outline" style="padding:0.35rem 0.75rem;font-size:0.78rem" onclick="exportCSV('absent')" title="Export Absentees with contact info">
-                <svg class="icon-svg" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                <span>Export Absentees</span>
-              </button>
-              <button class="btn btn-outline" style="padding:0.35rem 0.75rem;font-size:0.78rem" onclick="exportCSV('all')" title="Export Full Attendance Sheet">
-                <span>Export All (CSV)</span>
-              </button>
-              <button class="btn btn-primary" style="padding:0.35rem 0.75rem;font-size:0.78rem;background:#10b981;border-color:#10b981" onclick="exportMasterWorkbookXLSX()" title="Export Complete Master Synced Workbook (.xlsx) with all batches and attendance">
+              <button class="btn btn-primary" style="padding:0.35rem 0.75rem;font-size:0.78rem;background:#10b981;border-color:#10b981" onclick="exportMasterWorkbookXLSX()" title="Download present students from this session">
                 <svg class="icon-svg" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                 <span>Export Excel (.xlsx)</span>
               </button>

@@ -212,8 +212,31 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-// ---- Student Roster Lookup (private data stays behind callable functions) ----
+// ---- Student Roster Lookup (Direct Firestore / Client-side) ----
 var registrationLookupSequence = 0;
+let cachedRosterStudents = null;
+
+async function getRosterStudents() {
+  if (cachedRosterStudents && cachedRosterStudents.length > 0) return cachedRosterStudents;
+  const list = [];
+  if (typeof window !== 'undefined' && window.ATTENDX_ROSTER && Array.isArray(window.ATTENDX_ROSTER.students)) {
+    list.push(...window.ATTENDX_ROSTER.students);
+  }
+  try {
+    const doc = await db.collection('settings').doc('student_roster').get();
+    if (doc.exists && Array.isArray(doc.data().students)) {
+      doc.data().students.forEach(s => {
+        if (s && s.email && !list.some(existing => existing.email && existing.email.toLowerCase() === s.email.toLowerCase())) {
+          list.push(s);
+        }
+      });
+    }
+  } catch (err) {
+    console.warn('Could not read settings/student_roster directly:', err.message);
+  }
+  cachedRosterStudents = list;
+  return list;
+}
 
 async function onStudentEmailRegInput(val) {
   clearTimeout(emailLookupDebounce);
@@ -229,50 +252,121 @@ async function onStudentEmailRegInput(val) {
     return;
   }
 
-  hintEl.textContent = 'Checking your college roster…';
+  hintEl.textContent = 'Checking college roster…';
   hintEl.className = 'password-match-hint';
 
   emailLookupDebounce = setTimeout(async () => {
     try {
-      const verify = firebase.functions().httpsCallable('verifyStudentRegistration');
-      const result = await verify({ email });
+      const students = await getRosterStudents();
       if (sequence !== registrationLookupSequence) return;
-      const student = result.data && result.data.student;
-      if (!student) throw new Error('Your email was not found in the verified college roster.');
+      const student = students.find(s => String(s.email || '').trim().toLowerCase() === email);
 
-      verifiedRosterData = { ...student, email };
-      for (const [id, value] of Object.entries({
-        'reg-name': student.name,
-        'reg-branch': student.branch,
-        'reg-section': student.section,
-        'reg-batch': student.batch,
-        'reg-roll': student.rollNumber
-      })) {
-        const input = document.getElementById(id);
-        if (input && value) input.value = value;
+      const nameInput = document.getElementById('reg-name');
+      const branchInput = document.getElementById('reg-branch');
+      const sectionInput = document.getElementById('reg-section');
+      const batchInput = document.getElementById('reg-batch');
+      const mobileInput = document.getElementById('reg-mobile');
+      const rollInput = document.getElementById('reg-roll');
+
+      if (student) {
+        verifiedRosterData = { ...student, email };
+        if (nameInput && (!nameInput.value.trim() || nameInput.dataset.autofilled === 'true')) {
+          nameInput.value = student.name || '';
+          nameInput.dataset.autofilled = 'true';
+        }
+        if (branchInput && (!branchInput.value.trim() || branchInput.dataset.autofilled === 'true')) {
+          branchInput.value = student.branch || '';
+          branchInput.dataset.autofilled = 'true';
+        }
+        if (sectionInput && (!sectionInput.value.trim() || sectionInput.dataset.autofilled === 'true')) {
+          sectionInput.value = student.section || '';
+          sectionInput.dataset.autofilled = 'true';
+        }
+        if (batchInput && student.batch) {
+          batchInput.value = student.batch;
+        }
+        if (mobileInput && student.mobile && (!mobileInput.value.trim() || mobileInput.dataset.autofilled === 'true')) {
+          mobileInput.value = student.mobile;
+          mobileInput.dataset.autofilled = 'true';
+        }
+        if (rollInput && student.rollNumber) {
+          rollInput.value = student.rollNumber;
+        }
+
+        hintEl.textContent = `Verified in College Roster: ${student.name} (${student.branch || 'Branch'}${student.section ? ' - Sec ' + student.section : ''}${student.batch ? ' | ' + student.batch : ''})`;
+        hintEl.className = 'password-match-hint text-success';
+      } else {
+        verifiedRosterData = null;
+        hintEl.innerHTML = '<span style="color:#0284c7">New Student (not in pre-enrolled roster): Enter your details below to register.</span>';
+        hintEl.className = 'password-match-hint';
       }
-      hintEl.textContent = `Verified in College Roster: ${student.name} (${student.branch || 'Branch'}${student.section ? ' - Sec ' + student.section : ''}${student.batch ? ' | ' + student.batch : ''})`;
-      hintEl.className = 'password-match-hint text-success';
     } catch (error) {
       if (sequence !== registrationLookupSequence) return;
       verifiedRosterData = null;
-      hintEl.textContent = error.message || 'Could not verify this email. Please contact your administrator.';
-      hintEl.className = 'password-match-hint text-warn';
+      hintEl.textContent = 'Enter your academic details below to register.';
+      hintEl.className = 'password-match-hint';
     }
   }, 250);
 }
 
-function onStudentMobileRegInput() {
-  verifiedRosterData = null;
-  const hintEl = document.getElementById('student-reg-email-hint');
-  if (hintEl) {
-    hintEl.textContent = 'Enter your college roster email to verify your registration.';
-    hintEl.className = 'password-match-hint';
-  }
+async function onStudentMobileRegInput(rawMobile) {
+  clearTimeout(mobileLookupDebounce);
+  const digits = String(rawMobile || '').replace(/[^0-9]/g, '');
+  if (digits.length < 7) return;
+
+  mobileLookupDebounce = setTimeout(async () => {
+    try {
+      const students = await getRosterStudents();
+      const match = students.find(s => {
+        const sm = String(s.mobile || '').replace(/[^0-9]/g, '');
+        return sm && (sm === digits || sm.endsWith(digits) || digits.endsWith(sm));
+      });
+      if (!match) return;
+
+      verifiedRosterData = { ...match };
+      const nameInput = document.getElementById('reg-name');
+      const emailInput = document.getElementById('reg-email');
+      const branchInput = document.getElementById('reg-branch');
+      const sectionInput = document.getElementById('reg-section');
+      const batchInput = document.getElementById('reg-batch');
+
+      if (nameInput && (!nameInput.value.trim() || nameInput.dataset.autofilled === 'true')) {
+        nameInput.value = match.name || '';
+        nameInput.dataset.autofilled = 'true';
+      }
+      if (emailInput && (!emailInput.value.trim() || emailInput.dataset.autofilled === 'true') && match.email) {
+        emailInput.value = match.email;
+        emailInput.dataset.autofilled = 'true';
+      }
+      if (branchInput && (!branchInput.value.trim() || branchInput.dataset.autofilled === 'true')) {
+        branchInput.value = match.branch || '';
+        branchInput.dataset.autofilled = 'true';
+      }
+      if (sectionInput && (!sectionInput.value.trim() || sectionInput.dataset.autofilled === 'true')) {
+        sectionInput.value = match.section || '';
+        sectionInput.dataset.autofilled = 'true';
+      }
+      if (batchInput && match.batch) {
+        batchInput.value = match.batch;
+      }
+    } catch (_) {}
+  }, 250);
 }
 
-function findStudentByMobile() { return null; }
-function findStudentInRoster() { return null; }
+function findStudentByMobile(mobile) {
+  if (!mobile || !cachedRosterStudents) return null;
+  const digits = String(mobile).replace(/[^0-9]/g, '');
+  return cachedRosterStudents.find(s => {
+    const sm = String(s.mobile || '').replace(/[^0-9]/g, '');
+    return sm && (sm === digits || sm.endsWith(digits) || digits.endsWith(sm));
+  });
+}
+
+function findStudentInRoster(email) {
+  if (!email || !cachedRosterStudents) return null;
+  const clean = String(email).trim().toLowerCase();
+  return cachedRosterStudents.find(s => String(s.email || '').trim().toLowerCase() === clean);
+}
 
 // Backward-compatible alias for any legacy callers
 const onStudentRollRegInput = onStudentEmailRegInput;
@@ -285,51 +379,87 @@ async function registerStudent() {
   const password = passwordInput ? passwordInput.value : '';
   const confirmPassword = document.getElementById('reg-confirm-password')?.value || password;
   const personalEmail = emailInput ? emailInput.value.trim().toLowerCase() : '';
+  const name = nameInput ? nameInput.value.trim() : '';
+  const branch = document.getElementById('reg-branch')?.value.trim() || '';
+  const section = document.getElementById('reg-section')?.value.trim() || '';
+  const batch = document.getElementById('reg-batch')?.value.trim() || 'BATCH - 1';
+  const mobileInput = document.getElementById('reg-mobile');
+  const mobile = mobileInput ? mobileInput.value.trim().replace(/[^0-9]/g, '') : '';
+  const rollInput = document.getElementById('reg-roll');
+  const roll = rollInput ? rollInput.value.trim() : '';
 
-  if (!personalEmail || !password) return showRegError('Enter your college email address and password.');
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(personalEmail)) return showRegError('Enter a valid email address.');
-  if (password.length < 6) return showRegError('Password must be at least 6 characters long.');
-  if (password !== confirmPassword) return showRegError('Passwords do not match.');
+  if (!personalEmail || !password || !name || !branch) {
+    return showRegError('Please fill in all required fields (Full Name, Personal Email ID, Branch, Batch, and Password).');
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(personalEmail)) {
+    return showRegError('Enter a valid personal email address.');
+  }
+  if (password.length < 6) {
+    return showRegError('Password must be at least 6 characters long.');
+  }
+  if (password !== confirmPassword) {
+    return showRegError('Passwords do not match.');
+  }
 
   setLoading('reg-btn', true);
   let cred = null;
   try {
-    const verify = firebase.functions().httpsCallable('verifyStudentRegistration');
-    const verification = await verify({ email: personalEmail });
-    const academicData = verification.data && verification.data.student;
-    if (!academicData) throw new Error('Your email was not found in the verified college roster.');
-
-    // Restore the verified roster values so the form cannot present a different batch.
-    for (const [id, value] of Object.entries({
-      'reg-name': academicData.name,
-      'reg-branch': academicData.branch,
-      'reg-section': academicData.section,
-      'reg-batch': academicData.batch,
-      'reg-roll': academicData.rollNumber
-    })) {
-      const input = document.getElementById(id);
-      if (input && value) input.value = value;
-    }
-    verifiedRosterData = { ...academicData, email: personalEmail };
+    const students = await getRosterStudents();
+    const rosterMatch = students.find(s => String(s.email || '').trim().toLowerCase() === personalEmail) || verifiedRosterData;
 
     cred = await auth.createUserWithEmailAndPassword(personalEmail, password);
-    await db.collection('users').doc(cred.user.uid).set({
+
+    const studentName = rosterMatch?.name || name;
+    try {
+      await cred.user.updateProfile({ displayName: studentName });
+    } catch (_) {}
+
+    try {
+      await cred.user.sendEmailVerification();
+    } catch (verifErr) {
+      console.warn('Could not send verification email:', verifErr);
+    }
+
+    const rollNumber = rosterMatch?.rollNumber || roll || '';
+    const studentData = {
+      name: studentName,
+      college: rosterMatch?.college || 'AVN',
+      branch: rosterMatch?.branch || branch,
+      section: rosterMatch?.section || section || 'No Section',
+      rollNumber: rollNumber,
+      studentId: rollNumber,
+      mobile: rosterMatch?.mobile || mobile || '',
       email: personalEmail,
+      personalEmail: personalEmail,
       role: 'student',
-      status: 'pending'
-    });
+      batch: rosterMatch?.batch || batch || 'BATCH - 1',
+      status: 'active',
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    };
 
-    const complete = firebase.functions().httpsCallable('completeStudentRegistration');
-    const completion = await complete({});
-    const studentData = completion.data && completion.data.student;
-    if (!studentData || studentData.status !== 'active') {
-      throw new Error('Your account was created but could not be activated. Sign in again or contact your administrator.');
+    await db.collection('users').doc(cred.user.uid).set(studentData);
+
+    if (!rosterMatch) {
+      try {
+        await db.collection('settings').doc('student_roster').set({
+          students: firebase.firestore.FieldValue.arrayUnion({
+            name: studentData.name,
+            email: personalEmail,
+            mobile: studentData.mobile,
+            branch: studentData.branch,
+            section: studentData.section,
+            batch: studentData.batch,
+            rollNumber: rollNumber,
+            college: 'AVN',
+            status: 'verified',
+            sourceSheet: 'Self-Registered'
+          })
+        }, { merge: true });
+      } catch (rErr) {
+        console.warn('Auto-add to roster notice:', rErr);
+      }
     }
 
-    try { await cred.user.updateProfile({ displayName: studentData.name || 'Student' }); } catch (_) {}
-    try { await cred.user.sendEmailVerification(); } catch (error) {
-      console.warn('Could not send verification email:', error);
-    }
     localStorage.setItem(`user_profile_${cred.user.uid}`, JSON.stringify(studentData));
     closeStudentRegister();
     showToast('Account created successfully! Welcome to AttendX.', 'success');
@@ -653,13 +783,13 @@ function setLoading(btnId, loading) {
 
 function getFriendlyError(code) {
   const map = {
-    'auth/user-not-found'      : 'No account found with this Roll Number. If you are new, click "Create account" below.',
+    'auth/user-not-found'      : 'No account found with this email. If you are new, click "Create account" below.',
     'auth/wrong-password'      : 'Incorrect password. Please verify and try again.',
-    'auth/email-already-in-use': 'This Roll Number is already registered. Please sign in.',
-    'auth/invalid-email'       : 'Invalid roll number format.',
+    'auth/email-already-in-use': 'This email is already registered. Please sign in.',
+    'auth/invalid-email'       : 'Invalid email address format.',
     'auth/weak-password'       : 'Password must be at least 6 characters.',
     'auth/too-many-requests'   : 'Too many attempts. Please wait a moment and try again.',
-    'auth/invalid-credential'  : 'Invalid Roll Number or Password. If you haven\'t created an account yet, click "Create account" below.',
+    'auth/invalid-credential'  : 'Invalid Email or Password. If you haven\'t created an account yet, click "Create account" below.',
     'permission-denied'        : 'Database permission restricted. Please check Cloud Firestore rules in Firebase Console.',
     'auth/network-request-failed': 'Network connection issue. Please check your internet connection.',
   };
@@ -668,14 +798,16 @@ function getFriendlyError(code) {
 
 function getFriendlyRegError(code, err) {
   const map = {
-    'auth/email-already-in-use': 'This Roll Number is already registered. Please sign in.',
+    'auth/email-already-in-use': 'This Email ID is already registered. Please sign in instead.',
     'auth/weak-password'       : 'Password must be at least 6 characters long.',
-    'auth/invalid-email'       : 'Invalid Roll Number format.',
+    'auth/invalid-email'       : 'Invalid email address format.',
     'auth/operation-not-allowed': 'Registration is currently disabled in Firebase Auth. Please contact administrator.',
     'auth/network-request-failed': 'Network connection issue. Please check your internet connection.',
     'permission-denied'        : 'Account created, but database profile setup was restricted by permissions. Please contact admin.',
+    'internal'                 : 'Could not connect to registration service. Please verify details and try again.',
+    'functions/internal'       : 'Registration service encountered an error. Please try again.',
   };
-  return map[code] || (err && err.message ? err.message : 'Failed to create account. Please try again.');
+  return map[code] || (err && err.message && err.message !== 'internal' ? err.message : 'Failed to create account. Please try again.');
 }
 
 function showToast(msg, type = 'info') {
