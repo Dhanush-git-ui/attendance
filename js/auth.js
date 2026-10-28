@@ -76,20 +76,99 @@ async function loginStudent() {
   const password = passInput.value;
   if (!email || !password) return showError('Enter your registered email address and password.');
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return showError('Sign in with your registered email address. Phone and name lookup has been disabled to protect student information.');
+    return showError('Please enter a valid email address (e.g. name@example.com).');
   }
 
   setLoading('student-login-btn', true);
   try {
     const cred = await auth.signInWithEmailAndPassword(email, password);
-    const profile = await db.collection('users').doc(cred.user.uid).get();
-    if (!profile.exists || profile.data().role !== 'student' || profile.data().status !== 'active') {
-      await auth.signOut();
-      return showError('Student registration is incomplete or pending review. Please contact your administrator.');
+    const userDocRef = db.collection('users').doc(cred.user.uid);
+    const profile = await userDocRef.get();
+
+    // Check if user belongs to another role
+    if (profile.exists) {
+      const uData = profile.data();
+      if (uData.role === 'trainer') {
+        await auth.signOut();
+        return showError('This is a Trainer account. Please click the "Trainer" tab above to sign in.');
+      }
+      if (uData.role === 'admin') {
+        await auth.signOut();
+        return showError('This is an Administrator account. Please click the "Overall Admin" tab above to sign in.');
+      }
     }
+
+    // Auto-heal: If profile does not exist in Firestore, provision it immediately from roster/auth
+    if (!profile.exists) {
+      let rosterMatch = null;
+      try {
+        const students = await getRosterStudents();
+        rosterMatch = students.find(s => String(s.email || '').trim().toLowerCase() === email);
+      } catch (_) {}
+
+      // Block unauthorized external users who are not in the college roster
+      if (!rosterMatch && cachedRosterStudents && cachedRosterStudents.length > 0) {
+        await auth.signOut();
+        return showError('Access restricted: This email is not enrolled in the AVN college roster. Only registered students can access AttendX.');
+      }
+
+      const studentName = rosterMatch?.name || cred.user.displayName || email.split('@')[0];
+      const rollNumber = rosterMatch?.rollNumber || '';
+      const canonicalBatch = resolveCanonicalBatch(rosterMatch?.batch, rosterMatch?.branch, rosterMatch?.section, rosterMatch?.sourceSheet);
+      const studentData = {
+        name: studentName,
+        college: rosterMatch?.college || 'AVN',
+        branch: rosterMatch?.branch || 'General',
+        section: rosterMatch?.section || 'A',
+        rollNumber: rollNumber,
+        studentId: rollNumber,
+        mobile: rosterMatch?.mobile || '',
+        email: email,
+        personalEmail: email,
+        role: 'student',
+        batch: canonicalBatch,
+        status: 'active',
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      };
+      await userDocRef.set(studentData);
+      localStorage.setItem(`user_profile_${cred.user.uid}`, JSON.stringify(studentData));
+    } else {
+      // If profile exists, ensure status is active and batch is assigned
+      const uData = profile.data();
+      const updates = {};
+      if (uData.role !== 'student') updates.role = 'student';
+      if (uData.status !== 'active') updates.status = 'active';
+
+      // Auto-heal batch if mismatch with canonical roster or branch/section
+      let canonicalBatch = null;
+      try {
+        const students = await getRosterStudents();
+        const rm = students.find(s => String(s.email || '').trim().toLowerCase() === email);
+        if (rm && rm.batch) {
+          canonicalBatch = rm.batch;
+        }
+      } catch (_) {}
+      if (!canonicalBatch) {
+        canonicalBatch = resolveCanonicalBatch(uData.batch, uData.branch, uData.section);
+      }
+      if (canonicalBatch && uData.batch !== canonicalBatch) {
+        updates.batch = canonicalBatch;
+      } else if (!uData.batch) {
+        updates.batch = canonicalBatch || 'BATCH - 1';
+      }
+
+      if (Object.keys(updates).length > 0) {
+        updates.updatedAt = firebase.firestore.FieldValue.serverTimestamp();
+        try {
+          await userDocRef.update(updates);
+        } catch (_) {}
+      }
+      localStorage.setItem(`user_profile_${cred.user.uid}`, JSON.stringify({ ...uData, ...updates }));
+    }
+
     window.location.href = 'student.html';
   } catch (error) {
-    showError(error.message || getFriendlyError(error.code));
+    showError(getFriendlyError(error.code) || error.message);
   } finally {
     setLoading('student-login-btn', false);
   }
@@ -216,18 +295,70 @@ document.addEventListener('keydown', (e) => {
 var registrationLookupSequence = 0;
 let cachedRosterStudents = null;
 
+function resolveCanonicalBatch(batch, branch, section, sourceSheet) {
+  const normSheet = String(sourceSheet || '').trim().toUpperCase();
+  if (normSheet === 'BATCH - 1' || normSheet === 'BATCH - 2' || normSheet === 'BATCH - 3') {
+    return normSheet;
+  }
+  const normBranch = String(branch || '').trim().toUpperCase();
+  const normSec = String(section || '').trim().toUpperCase();
+
+  // 1. ECE is always BATCH - 3
+  if (/\bECE\b|ELECTRONICS/i.test(normBranch)) return 'BATCH - 3';
+
+  // 2. CSE Sections:
+  // - CSE Sec B or Sec C is BATCH - 3
+  // - CSE Sec A or Sec D is BATCH - 1
+  if (/\bCSE\b|COMPUTER/i.test(normBranch)) {
+    if (/\bB\b|SEC-B|SEC\s*B/i.test(normSec)) return 'BATCH - 3';
+    if (/\bC\b|SEC-C|SEC\s*C/i.test(normSec)) return 'BATCH - 3';
+    if (/\bA\b|SEC-A|SEC\s*A/i.test(normSec)) return 'BATCH - 1';
+    if (/\bD\b|SEC-D|SEC\s*D/i.test(normSec)) return 'BATCH - 1';
+  }
+
+  // 3. AIML Sections:
+  // - AIML Sec D is BATCH - 3
+  // - AIML Sec C is BATCH - 1
+  // - AIML Sec A or Sec B is BATCH - 2
+  if (/\bAIML\b|AI\s*&?\s*ML/i.test(normBranch)) {
+    if (/\bD\b|SEC-D|SEC\s*D/i.test(normSec)) return 'BATCH - 3';
+    if (/\bC\b|SEC-C|SEC\s*C/i.test(normSec)) return 'BATCH - 1';
+    if (/\bA\b|SEC-A|SEC\s*A|\bB\b|SEC-B|SEC\s*B/i.test(normSec)) return 'BATCH - 2';
+  }
+
+  // 4. AIDS / AI&DS is always BATCH - 1
+  if (/AI\s*&?\s*DS|\bAIDS\b/i.test(normBranch)) return 'BATCH - 1';
+
+  // 5. DS (Data Science) is always BATCH - 2
+  if (/DATA\s*SCIENCE|\bDS\b/i.test(normBranch)) return 'BATCH - 2';
+
+  // 6. Cyber Security is always BATCH - 2
+  if (/CYBER/i.test(normBranch)) return 'BATCH - 2';
+
+  if (batch && ['BATCH - 1', 'BATCH - 2', 'BATCH - 3'].includes(batch)) return batch;
+  return batch || 'BATCH - 1';
+}
+
 async function getRosterStudents() {
   if (cachedRosterStudents && cachedRosterStudents.length > 0) return cachedRosterStudents;
   const list = [];
   if (typeof window !== 'undefined' && window.ATTENDX_ROSTER && Array.isArray(window.ATTENDX_ROSTER.students)) {
-    list.push(...window.ATTENDX_ROSTER.students);
+    window.ATTENDX_ROSTER.students.forEach(s => {
+      list.push({
+        ...s,
+        batch: resolveCanonicalBatch(s.batch, s.branch, s.section, s.sourceSheet)
+      });
+    });
   }
   try {
     const doc = await db.collection('settings').doc('student_roster').get();
     if (doc.exists && Array.isArray(doc.data().students)) {
       doc.data().students.forEach(s => {
         if (s && s.email && !list.some(existing => existing.email && existing.email.toLowerCase() === s.email.toLowerCase())) {
-          list.push(s);
+          list.push({
+            ...s,
+            batch: resolveCanonicalBatch(s.batch, s.branch, s.section, s.sourceSheet)
+          });
         }
       });
     }
@@ -282,8 +413,10 @@ async function onStudentEmailRegInput(val) {
           sectionInput.value = student.section || '';
           sectionInput.dataset.autofilled = 'true';
         }
-        if (batchInput && student.batch) {
-          batchInput.value = student.batch;
+        const assignedBatch = resolveCanonicalBatch(student.batch, student.branch, student.section, student.sourceSheet);
+        student.batch = assignedBatch;
+        if (batchInput) {
+          batchInput.value = assignedBatch;
         }
         if (mobileInput && student.mobile && (!mobileInput.value.trim() || mobileInput.dataset.autofilled === 'true')) {
           mobileInput.value = student.mobile;
@@ -307,6 +440,21 @@ async function onStudentEmailRegInput(val) {
       hintEl.className = 'password-match-hint';
     }
   }, 250);
+}
+
+function autoDetectBatchFromAcademic() {
+  const branchInput = document.getElementById('reg-branch');
+  const sectionInput = document.getElementById('reg-section');
+  const batchInput = document.getElementById('reg-batch');
+  if (!batchInput || batchInput.dataset.manuallyChanged === 'true') return;
+  const branch = branchInput ? branchInput.value.trim() : '';
+  const section = sectionInput ? sectionInput.value.trim() : '';
+  if (branch) {
+    const determined = resolveCanonicalBatch('', branch, section);
+    if (determined) {
+      batchInput.value = determined;
+    }
+  }
 }
 
 async function onStudentMobileRegInput(rawMobile) {
@@ -346,8 +494,10 @@ async function onStudentMobileRegInput(rawMobile) {
         sectionInput.value = match.section || '';
         sectionInput.dataset.autofilled = 'true';
       }
-      if (batchInput && match.batch) {
-        batchInput.value = match.batch;
+      const assignedBatch = resolveCanonicalBatch(match.batch, match.branch, match.section, match.sourceSheet);
+      match.batch = assignedBatch;
+      if (batchInput) {
+        batchInput.value = assignedBatch;
       }
     } catch (_) {}
   }, 250);
@@ -405,7 +555,15 @@ async function registerStudent() {
   let cred = null;
   try {
     const students = await getRosterStudents();
-    const rosterMatch = students.find(s => String(s.email || '').trim().toLowerCase() === personalEmail) || verifiedRosterData;
+    let rosterMatch = students.find(s => String(s.email || '').trim().toLowerCase() === personalEmail) || verifiedRosterData;
+    if (!rosterMatch && mobile) {
+      rosterMatch = findStudentByMobile(mobile);
+    }
+
+    // Restrict registration strictly to enrolled college students
+    if (!rosterMatch && students.length > 0) {
+      return showRegError('This email/mobile is not found in the AVN college enrollment roster. Only registered students can create an account.');
+    }
 
     cred = await auth.createUserWithEmailAndPassword(personalEmail, password);
 
@@ -421,6 +579,7 @@ async function registerStudent() {
     }
 
     const rollNumber = rosterMatch?.rollNumber || roll || '';
+    const canonicalBatch = resolveCanonicalBatch(rosterMatch?.batch || batch, rosterMatch?.branch || branch, rosterMatch?.section || section, rosterMatch?.sourceSheet);
     const studentData = {
       name: studentName,
       college: rosterMatch?.college || 'AVN',
@@ -432,33 +591,12 @@ async function registerStudent() {
       email: personalEmail,
       personalEmail: personalEmail,
       role: 'student',
-      batch: rosterMatch?.batch || batch || 'BATCH - 1',
+      batch: canonicalBatch,
       status: 'active',
       createdAt: firebase.firestore.FieldValue.serverTimestamp()
     };
 
     await db.collection('users').doc(cred.user.uid).set(studentData);
-
-    if (!rosterMatch) {
-      try {
-        await db.collection('settings').doc('student_roster').set({
-          students: firebase.firestore.FieldValue.arrayUnion({
-            name: studentData.name,
-            email: personalEmail,
-            mobile: studentData.mobile,
-            branch: studentData.branch,
-            section: studentData.section,
-            batch: studentData.batch,
-            rollNumber: rollNumber,
-            college: 'AVN',
-            status: 'verified',
-            sourceSheet: 'Self-Registered'
-          })
-        }, { merge: true });
-      } catch (rErr) {
-        console.warn('Auto-add to roster notice:', rErr);
-      }
-    }
 
     localStorage.setItem(`user_profile_${cred.user.uid}`, JSON.stringify(studentData));
     closeStudentRegister();
@@ -664,6 +802,12 @@ async function loginTrainer() {
     const cred = await auth.signInWithEmailAndPassword(email, password);
     const doc  = await db.collection('users').doc(cred.user.uid).get();
 
+    if (doc.exists && doc.data().role === 'student') {
+      await auth.signOut();
+      showError('This is a Student account. Please click the "Student" tab above to sign in.');
+      return;
+    }
+
     if (!doc.exists || (doc.data().role !== 'trainer' && doc.data().role !== 'admin')) {
       await auth.signOut();
       showError('This account does not have trainer or instructor access.');
@@ -680,7 +824,7 @@ async function loginTrainer() {
 
     window.location.href = 'admin.html';
   } catch (e) {
-    showError(getFriendlyError(e.code));
+    showError(getFriendlyError(e.code) || e.message);
   } finally {
     setLoading('trainer-login-btn', false);
   }
@@ -692,7 +836,7 @@ async function loginOverallAdmin() {
   const passInput  = document.getElementById('overall-admin-password');
   if (!emailInput || !passInput) return;
 
-  const email = emailInput.value.trim();
+  const email = emailInput.value.trim().toLowerCase();
   const password = passInput.value;
 
   if (!email || !password) return showError('Please fill in both email and password.');
@@ -702,6 +846,18 @@ async function loginOverallAdmin() {
     const cred = await auth.signInWithEmailAndPassword(email, password);
     const doc  = await db.collection('users').doc(cred.user.uid).get();
 
+    if (doc.exists && doc.data().role === 'student') {
+      await auth.signOut();
+      showError('This is a Student account. Please click the "Student" tab above to sign in.');
+      return;
+    }
+
+    if (doc.exists && doc.data().role === 'trainer') {
+      await auth.signOut();
+      showError('This is a Trainer account. Please click the "Trainer" tab above to sign in.');
+      return;
+    }
+
     if (!doc.exists || doc.data().role !== 'admin') {
       await auth.signOut();
       showError('This account does not have overall administrator access.');
@@ -710,7 +866,7 @@ async function loginOverallAdmin() {
 
     window.location.href = 'admin.html';
   } catch (e) {
-    showError(getFriendlyError(e.code));
+    showError(getFriendlyError(e.code) || e.message);
   } finally {
     setLoading('overall-admin-login-btn', false);
   }
@@ -719,22 +875,33 @@ async function loginOverallAdmin() {
 // ---- Forgot Password Handler ----
 async function handleForgotPassword(role) {
   if (role === 'student') {
-    const roll = document.getElementById('student-roll')?.value.trim();
-    if (!roll) {
-      showToast('Please enter your Roll Number in the input field first.', 'info');
-      document.getElementById('student-roll')?.focus();
+    const inputEl = document.getElementById('student-identifier') || document.getElementById('student-roll');
+    const email = inputEl?.value.trim().toLowerCase();
+    if (!email) {
+      showToast('Please enter your email address in the field above first.', 'info');
+      inputEl?.focus();
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      showToast('Please enter a valid email address (e.g. name@example.com).', 'info');
+      inputEl?.focus();
       return;
     }
     try {
-      const authEmail = roll.includes('@') ? roll.toLowerCase() : `${roll.toLowerCase()}@attendx.local`;
-      await auth.sendPasswordResetEmail(authEmail);
-      showToast('Password reset link sent to registered email!', 'success');
+      await auth.sendPasswordResetEmail(email);
+      showToast(`Password reset link sent to ${email}! Check your inbox.`, 'success');
     } catch (e) {
-      showToast('If registered, a reset link was sent. Otherwise please contact administration.', 'info');
+      if (e.code === 'auth/user-not-found') {
+        showToast('No account found for this email. Click "Create account" below.', 'error');
+      } else if (e.code === 'auth/too-many-requests') {
+        showToast('Too many reset attempts. Please wait a few minutes before trying again.', 'error');
+      } else {
+        showToast(getFriendlyError(e.code) || 'Could not send reset email. Please contact administrator.', 'error');
+      }
     }
   } else {
     const emailInput = role === 'trainer' ? document.getElementById('trainer-email') : document.getElementById('overall-admin-email');
-    const email = emailInput?.value.trim();
+    const email = emailInput?.value.trim().toLowerCase();
     if (!email) {
       showToast('Please enter your email address first.', 'info');
       emailInput?.focus();
@@ -742,9 +909,9 @@ async function handleForgotPassword(role) {
     }
     try {
       await auth.sendPasswordResetEmail(email);
-      showToast(`Password reset link sent to ${email}!`, 'success');
+      showToast(`Password reset link sent to ${email}! Check your inbox.`, 'success');
     } catch (e) {
-      showToast(getFriendlyError(e.code), 'error');
+      showToast(getFriendlyError(e.code) || 'Failed to send reset link.', 'error');
     }
   }
 }
@@ -788,7 +955,7 @@ function getFriendlyError(code) {
     'auth/email-already-in-use': 'This email is already registered. Please sign in.',
     'auth/invalid-email'       : 'Invalid email address format.',
     'auth/weak-password'       : 'Password must be at least 6 characters.',
-    'auth/too-many-requests'   : 'Too many attempts. Please wait a moment and try again.',
+    'auth/too-many-requests'   : 'Temporarily blocked due to repeated attempts. Switch to Mobile Data (or another Wi-Fi) to sign in immediately, or wait 15 minutes.',
     'auth/invalid-credential'  : 'Invalid Email or Password. If you haven\'t created an account yet, click "Create account" below.',
     'permission-denied'        : 'Database permission restricted. Please check Cloud Firestore rules in Firebase Console.',
     'auth/network-request-failed': 'Network connection issue. Please check your internet connection.',

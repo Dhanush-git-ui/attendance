@@ -18,16 +18,102 @@ auth.onAuthStateChanged(async (user) => {
     let profileData = {};
     try {
       const doc = await db.collection('users').doc(user.uid).get();
-      if (doc.exists) {
+      if (!doc.exists) {
+        // Self-heal profile from college roster if doc is missing
+        let rosterMatch = null;
+        try {
+          const rDoc = await db.collection('settings').doc('student_roster').get();
+          if (rDoc.exists && Array.isArray(rDoc.data().students)) {
+            rosterMatch = rDoc.data().students.find(s => String(s.email || '').trim().toLowerCase() === (user.email || '').toLowerCase());
+          }
+        } catch (_) {}
+
+function resolveCanonicalBatch(batch, branch, section, sourceSheet) {
+  const normSheet = String(sourceSheet || '').trim().toUpperCase();
+  if (normSheet === 'BATCH - 1' || normSheet === 'BATCH - 2' || normSheet === 'BATCH - 3') {
+    return normSheet;
+  }
+  const normBranch = String(branch || '').trim().toUpperCase();
+  const normSec = String(section || '').trim().toUpperCase();
+
+  // 1. ECE is always BATCH - 3
+  if (/\bECE\b|ELECTRONICS/i.test(normBranch)) return 'BATCH - 3';
+
+  // 2. CSE Sections:
+  // - CSE Sec B or Sec C is BATCH - 3
+  // - CSE Sec A or Sec D is BATCH - 1
+  if (/\bCSE\b|COMPUTER/i.test(normBranch)) {
+    if (/\bB\b|SEC-B|SEC\s*B/i.test(normSec)) return 'BATCH - 3';
+    if (/\bC\b|SEC-C|SEC\s*C/i.test(normSec)) return 'BATCH - 3';
+    if (/\bA\b|SEC-A|SEC\s*A/i.test(normSec)) return 'BATCH - 1';
+    if (/\bD\b|SEC-D|SEC\s*D/i.test(normSec)) return 'BATCH - 1';
+  }
+
+  // 3. AIML Sections:
+  // - AIML Sec D is BATCH - 3
+  // - AIML Sec C is BATCH - 1
+  // - AIML Sec A or Sec B is BATCH - 2
+  if (/\bAIML\b|AI\s*&?\s*ML/i.test(normBranch)) {
+    if (/\bD\b|SEC-D|SEC\s*D/i.test(normSec)) return 'BATCH - 3';
+    if (/\bC\b|SEC-C|SEC\s*C/i.test(normSec)) return 'BATCH - 1';
+    if (/\bA\b|SEC-A|SEC\s*A|\bB\b|SEC-B|SEC\s*B/i.test(normSec)) return 'BATCH - 2';
+  }
+
+  // 4. AIDS / AI&DS is always BATCH - 1
+  if (/AI\s*&?\s*DS|\bAIDS\b/i.test(normBranch)) return 'BATCH - 1';
+
+  // 5. DS (Data Science) is always BATCH - 2
+  if (/DATA\s*SCIENCE|\bDS\b/i.test(normBranch)) return 'BATCH - 2';
+
+  // 6. Cyber Security is always BATCH - 2
+  if (/CYBER/i.test(normBranch)) return 'BATCH - 2';
+
+  if (batch && ['BATCH - 1', 'BATCH - 2', 'BATCH - 3'].includes(batch)) return batch;
+  return batch || 'BATCH - 1';
+}
+
+        const canonicalBatch = resolveCanonicalBatch(rosterMatch?.batch, rosterMatch?.branch, rosterMatch?.section, rosterMatch?.sourceSheet);
+        profileData = {
+          name: rosterMatch?.name || user.displayName || (user.email ? user.email.split('@')[0] : 'Student'),
+          college: rosterMatch?.college || 'AVN',
+          branch: rosterMatch?.branch || 'General',
+          section: rosterMatch?.section || 'A',
+          rollNumber: rosterMatch?.rollNumber || '',
+          studentId: rosterMatch?.rollNumber || '',
+          mobile: rosterMatch?.mobile || '',
+          email: user.email || '',
+          personalEmail: user.email || '',
+          role: 'student',
+          batch: canonicalBatch,
+          status: 'active',
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        };
+        try {
+          await db.collection('users').doc(user.uid).set(profileData);
+        } catch (_) {}
+      } else {
         if (doc.data().role !== 'student') {
           window.location.href = 'index.html';
           return;
         }
         profileData = doc.data();
-        if (profileData.role === 'student' && profileData.status === 'pending') {
-          const complete = firebase.functions().httpsCallable('completeStudentRegistration');
-          const result = await complete({});
-          if (result.data && result.data.student) profileData = result.data.student;
+        const expectedBatch = resolveCanonicalBatch(profileData.batch, profileData.branch, profileData.section, profileData.sourceSheet);
+        const updates = {};
+        if (profileData.status !== 'active') {
+          updates.status = 'active';
+          profileData.status = 'active';
+        }
+        if (expectedBatch && profileData.batch !== expectedBatch) {
+          updates.batch = expectedBatch;
+          profileData.batch = expectedBatch;
+        }
+        if (Object.keys(updates).length > 0) {
+          try {
+            await db.collection('users').doc(user.uid).update({
+              ...updates,
+              updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+          } catch (_) {}
         }
       }
     } catch (fsErr) {
@@ -108,6 +194,14 @@ function populateStudentInfo() {
   // Batch badge
   const batchBadge = document.getElementById('student-batch-badge');
   const editBatchBtn = document.getElementById('edit-batch-btn');
+  const canonicalBatch = resolveCanonicalBatch(currentUser.batch, currentUser.branch, currentUser.section);
+  if (canonicalBatch && currentUser.batch !== canonicalBatch) {
+    currentUser.batch = canonicalBatch;
+    try {
+      db.collection('users').doc(currentUser.uid).update({ batch: canonicalBatch });
+      localStorage.setItem(`user_profile_${currentUser.uid}`, JSON.stringify(currentUser));
+    } catch (_) {}
+  }
   if (batchBadge) {
     if (currentUser.batch) {
       batchBadge.textContent = currentUser.batch;
@@ -117,7 +211,7 @@ function populateStudentInfo() {
     }
   }
   if (editBatchBtn) {
-    editBatchBtn.style.display = 'none';
+    editBatchBtn.style.display = 'inline-flex';
   }
 
   // College info (default to AVN from database)
@@ -238,78 +332,79 @@ async function onScanSuccess(rawValue) {
     let sessionName = 'Class';
     let subjectName = 'Session';
 
-    // 1. If callable function is deployed, attempt it first
-    if (typeof firebase !== 'undefined' && typeof firebase.functions === 'function') {
+    // Direct Firestore verification (instant, zero-latency, 100% Spark-plan compatible)
+    const sessionDoc = await db.collection('sessions').doc(sessionId).get();
+    if (!sessionDoc.exists) {
+      throw new Error('Session not found or has expired.');
+    }
+    const session = sessionDoc.data();
+    if (session.status !== 'active') {
+      throw new Error('This attendance session has already ended.');
+    }
+
+    // Check if session duration timer has expired
+    if (session.endTime && session.endTime.toDate) {
+      const expiry = session.endTime.toDate();
+      if (Date.now() > expiry.getTime() + 60000) {
+        throw new Error('This attendance session has expired.');
+      }
+    }
+
+    // Rotating token match
+    const isCurrent = session.currentToken === token;
+    const isPrevious = Boolean(session.previousToken && session.previousToken === token);
+    if (!isCurrent && !isPrevious) {
+      throw new Error('QR code has expired. Please scan the current code on screen.');
+    }
+
+    // Fetch student profile details
+    let prof = currentUser || {};
+    if (!prof.name) {
       try {
-        const markAttendance = firebase.functions().httpsCallable('markAttendance');
-        const result = await markAttendance({ sessionId, token });
-        const data = result.data || {};
-        sessionName = data.className || sessionName;
-        subjectName = data.subject || subjectName;
-        successRecorded = true;
-      } catch (fnErr) {
-        console.warn('Callable function unavailable or failed, falling back to direct Firestore verification:', fnErr.message);
+        const uDoc = await db.collection('users').doc(currentUser.uid).get();
+        if (uDoc.exists) prof = { ...prof, ...uDoc.data() };
+      } catch (_) {}
+    }
+
+    // Verify batch match if session is restricted to a specific batch
+    if (session.batch && session.batch !== 'All' && session.batch !== 'All Batches') {
+      const studentBatch = (prof.batch || currentUser.batch || '').trim().toUpperCase();
+      const targetBatch = session.batch.trim().toUpperCase();
+      if (studentBatch && studentBatch !== targetBatch) {
+        throw new Error(`This session is for ${session.batch}. Your assigned batch is ${prof.batch || currentUser.batch}.`);
       }
     }
 
-    // 2. Direct Firestore verification fallback for Spark (free) plan
-    if (!successRecorded) {
-      const sessionDoc = await db.collection('sessions').doc(sessionId).get();
-      if (!sessionDoc.exists) {
-        throw new Error('Session not found or has expired.');
-      }
-      const session = sessionDoc.data();
-      if (session.status !== 'active') {
-        throw new Error('This attendance session has already ended.');
-      }
-
-      // Rotating token match
-      const isCurrent = session.currentToken === token;
-      const isPrevious = Boolean(session.previousToken && session.previousToken === token);
-      if (!isCurrent && !isPrevious) {
-        throw new Error('QR code has expired. Please scan the current code on screen.');
-      }
-
-      // Prevent duplicate attendance for the same session
-      const recordRef = db.collection('attendance').doc(sessionId).collection('records').doc(currentUser.uid);
-      const existing = await recordRef.get();
-      if (existing.exists) {
-        throw new Error('Attendance has already been recorded for this session.');
-      }
-
-      // Fetch student profile details
-      let prof = currentUser || {};
-      if (!prof.name) {
-        try {
-          const uDoc = await db.collection('users').doc(currentUser.uid).get();
-          if (uDoc.exists) prof = { ...prof, ...uDoc.data() };
-        } catch (_) {}
-      }
-
-      const roll = prof.rollNumber || prof.studentId || '';
-      const email = prof.email || prof.personalEmail || currentUser.email || '';
-      const attendanceRecord = {
-        uid: currentUser.uid,
-        email: email,
-        personalEmail: email,
-        rollNumber: roll,
-        studentId: roll,
-        name: prof.name || currentUser.displayName || 'Student',
-        branch: prof.branch || '',
-        college: (prof.college && prof.college !== 'HITAM') ? prof.college : 'AVN',
-        section: prof.section || '',
-        batch: prof.batch || '',
-        sessionId: sessionId,
-        className: session.className || '',
-        subject: session.subject || '',
-        status: 'present',
-        markedAt: firebase.firestore.FieldValue.serverTimestamp()
-      };
-
-      await recordRef.set(attendanceRecord);
-      sessionName = session.className || sessionName;
-      subjectName = session.subject || subjectName;
+    // Prevent duplicate attendance for the same session
+    const recordRef = db.collection('attendance').doc(sessionId).collection('records').doc(currentUser.uid);
+    const existing = await recordRef.get();
+    if (existing.exists) {
+      throw new Error('Attendance has already been recorded for this session.');
     }
+
+    const roll = prof.rollNumber || prof.studentId || '';
+    const email = prof.email || prof.personalEmail || currentUser.email || '';
+    const attendanceRecord = {
+      uid: currentUser.uid,
+      email: email,
+      personalEmail: email,
+      rollNumber: roll,
+      studentId: roll,
+      name: prof.name || currentUser.displayName || 'Student',
+      branch: prof.branch || '',
+      college: (prof.college && prof.college !== 'HITAM') ? prof.college : 'AVN',
+      section: prof.section || '',
+      batch: prof.batch || '',
+      sessionId: sessionId,
+      className: session.className || '',
+      subject: session.subject || '',
+      status: 'present',
+      markedAt: firebase.firestore.FieldValue.serverTimestamp()
+    };
+
+    await recordRef.set(attendanceRecord);
+    sessionName = session.className || sessionName;
+    subjectName = session.subject || subjectName;
 
     showStatus('Attendance marked for "' + sessionName + '" — ' + subjectName, 'success');
     showToast('Attendance recorded!', 'success');
@@ -438,28 +533,14 @@ async function saveStudentBatch() {
 
   try {
     currentUser.batch = newBatch;
-    await db.collection('users').doc(currentUser.uid).update({ batch: newBatch });
+    await db.collection('users').doc(currentUser.uid).update({ 
+      batch: newBatch,
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
     localStorage.setItem(`user_profile_${currentUser.uid}`, JSON.stringify(currentUser));
-
-    // Also update in settings/student_roster if enrolled
-    try {
-      const rosterDoc = await db.collection('settings').doc('student_roster').get();
-      if (rosterDoc.exists) {
-        const students = rosterDoc.data().students || [];
-        const studentEmail = currentUser.email || currentUser.personalEmail;
-        const studentMobile = currentUser.mobile;
-        const idx = students.findIndex(s => 
-          (studentEmail && s.email && s.email.toLowerCase() === studentEmail.toLowerCase()) ||
-          (studentMobile && s.mobile && s.mobile.replace(/[^0-9]/g, '') === String(studentMobile).replace(/[^0-9]/g, ''))
-        );
-        if (idx !== -1) {
-          students[idx].batch = newBatch;
-          await db.collection('settings').doc('student_roster').set({ students }, { merge: true });
-        }
-      }
-    } catch (rErr) {
-      console.warn('Could not update roster batch:', rErr);
-    }
+    populateStudentInfo();
+    closeEditBatchModal();
+    showToast(`Batch updated to ${newBatch}`, 'success');
 
     if (typeof window !== 'undefined' && window.ATTENDX_ROSTER && Array.isArray(window.ATTENDX_ROSTER.students)) {
       const liveIdx = window.ATTENDX_ROSTER.students.findIndex(s => 

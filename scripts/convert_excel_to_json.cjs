@@ -54,6 +54,51 @@ function cleanBranch(raw) {
   return b || 'GENERAL';
 }
 
+
+function resolveCanonicalBatch(batch, branch, section, sourceSheet) {
+  const normSheet = String(sourceSheet || '').trim().toUpperCase();
+  if (normSheet === 'BATCH - 1' || normSheet === 'BATCH - 2' || normSheet === 'BATCH - 3') {
+    return normSheet;
+  }
+  const normBranch = String(branch || '').trim().toUpperCase();
+  const normSec = String(section || '').trim().toUpperCase();
+
+  // 1. ECE is always BATCH - 3
+  if (/\bECE\b|ELECTRONICS/i.test(normBranch)) return 'BATCH - 3';
+
+  // 2. CSE Sections:
+  // - CSE Sec B or Sec C is BATCH - 3
+  // - CSE Sec A or Sec D is BATCH - 1
+  if (/\bCSE\b|COMPUTER/i.test(normBranch)) {
+    if (/\bB\b|SEC-B|SEC\s*B/i.test(normSec)) return 'BATCH - 3';
+    if (/\bC\b|SEC-C|SEC\s*C/i.test(normSec)) return 'BATCH - 3';
+    if (/\bA\b|SEC-A|SEC\s*A/i.test(normSec)) return 'BATCH - 1';
+    if (/\bD\b|SEC-D|SEC\s*D/i.test(normSec)) return 'BATCH - 1';
+  }
+
+  // 3. AIML Sections:
+  // - AIML Sec D is BATCH - 3
+  // - AIML Sec C is BATCH - 1
+  // - AIML Sec A or Sec B is BATCH - 2
+  if (/\bAIML\b|AI\s*&?\s*ML/i.test(normBranch)) {
+    if (/\bD\b|SEC-D|SEC\s*D/i.test(normSec)) return 'BATCH - 3';
+    if (/\bC\b|SEC-C|SEC\s*C/i.test(normSec)) return 'BATCH - 1';
+    if (/\bA\b|SEC-A|SEC\s*A|\bB\b|SEC-B|SEC\s*B/i.test(normSec)) return 'BATCH - 2';
+  }
+
+  // 4. AIDS / AI&DS is always BATCH - 1
+  if (/AI\s*&?\s*DS|\bAIDS\b/i.test(normBranch)) return 'BATCH - 1';
+
+  // 5. DS (Data Science) is always BATCH - 2
+  if (/DATA\s*SCIENCE|\bDS\b/i.test(normBranch)) return 'BATCH - 2';
+
+  // 6. Cyber Security is always BATCH - 2
+  if (/CYBER/i.test(normBranch)) return 'BATCH - 2';
+
+  if (batch && ['BATCH - 1', 'BATCH - 2', 'BATCH - 3'].includes(batch)) return batch;
+  return batch || 'BATCH - 1';
+}
+
 function buildRoster() {
   const batchRows = [];
   ['BATCH - 1', 'BATCH - 2', 'BATCH - 3'].forEach(tab => {
@@ -128,7 +173,7 @@ function buildRoster() {
           name: r.name,
           branch: r.branch,
           section: r.section,
-          batch: r.batch,
+          batch: resolveCanonicalBatch(r.batch, r.branch, r.section, r.sourceSheet),
           email: r.email,
           mobile: r.mobile,
           rollNumber: '',
@@ -162,7 +207,7 @@ function buildRoster() {
           name: r.name,
           branch: r.branch,
           section: r.section,
-          batch: r.batch,
+          batch: resolveCanonicalBatch(r.batch, r.branch, r.section, r.sourceSheet),
           email: '',
           rawEmail: r.rawEmail,
           mobile: r.mobile,
@@ -204,7 +249,7 @@ function buildRoster() {
         name: f.name,
         branch: f.branch,
         section: f.section,
-        batch: '',
+        batch: resolveCanonicalBatch('', f.branch, f.section, f.sourceSheet),
         email: f.email,
         mobile: f.mobile,
         rollNumber: '',

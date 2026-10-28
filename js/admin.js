@@ -607,6 +607,50 @@ function isStudentRowValid(s) {
   return true;
 }
 
+function resolveCanonicalBatch(batch, branch, section, sourceSheet) {
+  const normSheet = String(sourceSheet || '').trim().toUpperCase();
+  if (normSheet === 'BATCH - 1' || normSheet === 'BATCH - 2' || normSheet === 'BATCH - 3') {
+    return normSheet;
+  }
+  const normBranch = String(branch || '').trim().toUpperCase();
+  const normSec = String(section || '').trim().toUpperCase();
+
+  // 1. ECE is always BATCH - 3
+  if (/\bECE\b|ELECTRONICS/i.test(normBranch)) return 'BATCH - 3';
+
+  // 2. CSE Sections:
+  // - CSE Sec B or Sec C is BATCH - 3
+  // - CSE Sec A or Sec D is BATCH - 1
+  if (/\bCSE\b|COMPUTER/i.test(normBranch)) {
+    if (/\bB\b|SEC-B|SEC\s*B/i.test(normSec)) return 'BATCH - 3';
+    if (/\bC\b|SEC-C|SEC\s*C/i.test(normSec)) return 'BATCH - 3';
+    if (/\bA\b|SEC-A|SEC\s*A/i.test(normSec)) return 'BATCH - 1';
+    if (/\bD\b|SEC-D|SEC\s*D/i.test(normSec)) return 'BATCH - 1';
+  }
+
+  // 3. AIML Sections:
+  // - AIML Sec D is BATCH - 3
+  // - AIML Sec C is BATCH - 1
+  // - AIML Sec A or Sec B is BATCH - 2
+  if (/\bAIML\b|AI\s*&?\s*ML/i.test(normBranch)) {
+    if (/\bD\b|SEC-D|SEC\s*D/i.test(normSec)) return 'BATCH - 3';
+    if (/\bC\b|SEC-C|SEC\s*C/i.test(normSec)) return 'BATCH - 1';
+    if (/\bA\b|SEC-A|SEC\s*A|\bB\b|SEC-B|SEC\s*B/i.test(normSec)) return 'BATCH - 2';
+  }
+
+  // 4. AIDS / AI&DS is always BATCH - 1
+  if (/AI\s*&?\s*DS|\bAIDS\b/i.test(normBranch)) return 'BATCH - 1';
+
+  // 5. DS (Data Science) is always BATCH - 2
+  if (/DATA\s*SCIENCE|\bDS\b/i.test(normBranch)) return 'BATCH - 2';
+
+  // 6. Cyber Security is always BATCH - 2
+  if (/CYBER/i.test(normBranch)) return 'BATCH - 2';
+
+  if (batch && ['BATCH - 1', 'BATCH - 2', 'BATCH - 3'].includes(batch)) return batch;
+  return batch || 'BATCH - 1';
+}
+
 // Clean and deduplicate any student array
 function sanitizeRoster(roster) {
   if (!Array.isArray(roster)) return [];
@@ -630,7 +674,7 @@ function sanitizeRoster(roster) {
       name: String(s.name || '').trim(),
       branch: normBranch,
       section: cleanSection(s.section),
-      batch: String(s.batch || '').trim(),
+      batch: resolveCanonicalBatch(s.batch, normBranch, cleanSection(s.section), s.sourceSheet),
       mobile: String(s.mobile || '').replace(/[^0-9+]/g, '').trim(),
       email: normEmail,
       college: String(s.college || 'HITAM').trim()
@@ -671,11 +715,24 @@ function loadMasterRoster() {
       if (doc.exists && doc.data()) {
         const d = doc.data();
         if (Array.isArray(d.students) && d.students.length > 0) {
-          masterRoster = sanitizeRoster(d.students);
-          masterIncompleteReviews = Array.isArray(d.incompleteRecordsReview) ? d.incompleteRecordsReview : [];
+          const sanitizedFromCloud = sanitizeRoster(d.students);
+          let rosterChanged = false;
+          for (let si = 0; si < sanitizedFromCloud.length; si++) {
+            if (sanitizedFromCloud[si].batch !== d.students[si]?.batch) {
+              rosterChanged = true;
+              break;
+            }
+          }
+          masterRoster = sanitizedFromCloud;
+          masterIncompleteReviews = Array.isArray(d.incompleteRecordsReview) ? sanitizeRoster(d.incompleteRecordsReview) : [];
           masterConflicts = Array.isArray(d.alternateEmailConflicts) ? d.alternateEmailConflicts : [];
           masterRegistrationAttempts = Array.isArray(d.registrationReviewAttempts) ? d.registrationReviewAttempts : [];
           localStorage.setItem('attendx_master_roster', JSON.stringify(masterRoster));
+          if (rosterChanged) {
+            try {
+              db.collection('settings').doc('student_roster').set({ students: masterRoster }, { merge: true }).catch(() => {});
+            } catch (_) {}
+          }
           populateRosterFilters();
           updateRosterUI();
           loadDailySheet();
@@ -1757,6 +1814,23 @@ async function resolveReviewStudent(idx, batchSelectId, emailInputId) {
       incompleteRecordsReview: masterIncompleteReviews,
       updatedAt: firebase.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
+
+    try {
+      const uSnap = await db.collection('users').where('email', '==', correctedEmail.toLowerCase()).get();
+      if (!uSnap.empty) {
+        for (const uDoc of uSnap.docs) {
+          await uDoc.ref.update({
+            status: 'active',
+            batch: assignedBatch,
+            branch: targetStudent.branch,
+            section: targetStudent.section,
+            name: targetStudent.name,
+            rollNumber: targetStudent.rollNumber,
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+          });
+        }
+      }
+    } catch (_) {}
 
     localStorage.setItem('attendx_master_roster', JSON.stringify(masterRoster));
     showToast(`Approved & verified ${targetStudent.name} in ${assignedBatch}`, 'success');

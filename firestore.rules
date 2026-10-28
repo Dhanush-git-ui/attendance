@@ -43,14 +43,15 @@ service cloud.firestore {
           request.resource.data.role == 'student' ||
           (request.resource.data.role == 'trainer' && request.resource.data.status == 'pending')
         );
-      allow update: if isOwner(userId) || isAdmin();
+      // Owner can update profile details, but cannot elevate role to admin/trainer
+      allow update: if isAdmin() || (isOwner(userId) && request.resource.data.role == resource.data.role);
       allow delete: if isAdmin();
     }
 
-    // 2. Settings / Master Roster: readable by students for validation
+    // 2. Settings / Master Roster: readable by students for validation, strictly writable by staff only
     match /settings/student_roster {
       allow read: if true;
-      allow write: if isStaff() || isAuthenticated();
+      allow write: if isStaff();
     }
 
     // 3. Sessions collection: authenticated students can verify QR codes
